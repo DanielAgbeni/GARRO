@@ -193,12 +193,13 @@ class MM1KNetworkEnv(GymEnv):
             self.lambda_map[(u, v)] = lam
             self.mu_map[(u, v)]     = mu
 
-            _, P_overflow, _ = mm1k_metrics(lam, mu, self.K_buf)
+            _, P_overflow, delay_ms = mm1k_metrics(lam, mu, self.K_buf)
 
             self.G.edges[u, v]["utilization"] = float(
                 np.clip(lam / (mu + 1e-9), 0.0, 1.0)
             )
             self.G.edges[u, v]["packet_loss"] = P_overflow
+            self.G.edges[u, v]["queuing_delay"] = delay_ms
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -262,12 +263,8 @@ class MM1KNetworkEnv(GymEnv):
             if edge is None:
                 return -10.0  # Edge not found — path is invalid
 
-            lam = self.lambda_map.get((u, v),
-                  self.lambda_map.get((v, u), self.base_lam))
-            mu  = self.mu_map.get((u, v),
-                  self.mu_map.get((v, u), self.base_mu))
-
-            _, P_overflow, delay_ms = mm1k_metrics(lam, mu, self.K_buf)
+            P_overflow = edge.get("packet_loss", 0.0)
+            delay_ms = edge.get("queuing_delay", 0.0)
 
             prop_delay   = edge.get("delay", 1.0)
             total_delay += prop_delay + min(delay_ms, 500.0)  # cap queuing at 500ms
