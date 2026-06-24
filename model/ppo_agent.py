@@ -37,7 +37,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
-from torch_geometric.data import Data
+from torch_geometric.data import Batch, Data
 
 from model.graph_transformer import GraphTransformerEncoder, nx_to_pyg
 
@@ -420,17 +420,15 @@ class PPOAgent:
         graph_states = self.buffer.states
         with torch.no_grad():
             with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
-                det_list: List[torch.Tensor] = []
+                pyg_list = []
                 for pyg in graph_states:
                     if not isinstance(pyg, Data):
                         if self.graph_converter is None:
                             self.graph_converter = FastGraphConverter(pyg, self.device)
                         pyg = self.graph_converter.convert(pyg)
-                    pyg.batch = torch.zeros(
-                        pyg.x.size(0), dtype=torch.long, device=self.device
-                    )
-                    det_list.append(self.encoder(pyg))
-        all_latents_det = torch.cat(det_list, dim=0)   # [T, hidden_dim] detached
+                    pyg_list.append(pyg)
+                batched_pyg = Batch.from_data_list(pyg_list).to(self.device)
+                all_latents_det = self.encoder(batched_pyg)   # [T, hidden_dim] detached
 
         # ── AC-Net PPO Mini-Batch Updates (no encoder grad — fast) ───────
         metrics: Dict[str, List[float]] = {
@@ -487,20 +485,17 @@ class PPOAgent:
         enc_size = min(self.batch_size, T)
         enc_idx  = torch.randperm(T, device=self.device)[:enc_size]
 
-        enc_lat_list: List[torch.Tensor] = []
         with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+            enc_pyg_list = []
             for i in enc_idx.tolist():
                 pyg = graph_states[i]
                 if not isinstance(pyg, Data):
                     if self.graph_converter is None:
                         self.graph_converter = FastGraphConverter(pyg, self.device)
                     pyg = self.graph_converter.convert(pyg)
-                pyg.batch = torch.zeros(
-                    pyg.x.size(0), dtype=torch.long, device=self.device
-                )
-                enc_lat_list.append(self.encoder(pyg))   # grad tracked here
-
-            enc_latents = torch.cat(enc_lat_list, dim=0)
+                enc_pyg_list.append(pyg)
+            batched_enc_pyg = Batch.from_data_list(enc_pyg_list).to(self.device)
+            enc_latents = self.encoder(batched_enc_pyg)
             logits_e, vals_e = self.ac_net(enc_latents)
             dist_e    = Categorical(logits=logits_e)
             new_lp_e  = dist_e.log_prob(actions[enc_idx])
