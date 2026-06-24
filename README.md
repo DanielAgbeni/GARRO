@@ -1,43 +1,48 @@
-# GARRO: Graph Attention Routing with Reinforcement Learning (Phase 1)
+# GARRO: Graph Attention Routing with Reinforcement Learning
 
-GARRO is a Deep Reinforcement Learning (DRL) routing framework designed for Software-Defined Networks (SDN). It combines a **Graph Attention Transformer (GAT)** to capture complex network topologies and traffic states with **Proximal Policy Optimization (PPO)** to dynamically route traffic requests. 
+GARRO is a Deep Reinforcement Learning (DRL) routing framework designed for Software-Defined Networks (SDN). It combines a **Graph Attention Transformer (GAT)** to capture complex network topologies and traffic states with **Proximal Policy Optimization (PPO)** to dynamically route traffic requests.
 
-This repository implements **Phase 1: Offline Digital Twin Training**, allowing the agent to train and benchmark entirely within an analytical M/M/1/K queueing simulation before online deployment.
+This repository implements both **Phase 1: Offline Digital Twin Training** and **Phase 2: Live Mininet Emulation** using OS-Ken (a modern, Neutron-optimized fork of the Ryu SDN controller).
 
 ---
 
 ## 🏗️ Project Architecture
 
-The project is structured logically into distinct layers:
+The project is structured into three clear planes: the AI Decision Plane, the Control Plane, and the Data/Simulation Plane.
 
 ```
-schproject/
-├── config.yaml                    # Centralized hyperparameter and environment config
-├── train_offline.py               # CLI entrypoint for training in the Digital Twin
-├── evaluate.py                    # CLI entrypoint for baseline benchmarking
-├── digital_twin.py                # Standalone M/M/1/K analytical queue validator
-│
-├── topologies/                    # Network topologies with custom telemetries
-│   ├── __init__.py
-│   ├── nsfnet.py                  # NSFNET: 14 nodes, 21 edges
-│   ├── geant2.py                  # GEANT2: 24 nodes, 37 edges
-│   └── fat_tree.py                # Fat-Tree (k=8): 80 nodes, 256 edges
-│
-├── digital_twin/                  # Gymnasium Simulation Environment
-│   ├── __init__.py
-│   ├── mm1k_env.py                # Gymnasium wrapper around M/M/1/K simulation
-│   └── traffic_generator.py       # Poisson traffic request generator with microbursts
-│
-├── model/                         # Deep Learning & RL Models
-│   ├── __init__.py
-│   ├── graph_transformer.py       # PyG Graph Transformer (GraphTransformerEncoder)
-│   └── ppo_agent.py               # PPO Actor-Critic agent optimized for graph states
-│
-└── controller/                    # Ryu/OS-Ken SDN Controller (Stubs for Phase 2)
-    └── __init__.py
+                  ┌──────────────────────────────┐
+                  │       Agentic AI Layer       │
+                  │   - LLM Orchestrator         │ (Refreshes rewards from intent)
+                  └──────────────────────────────┘
+                                  │ 
+                                  ▼ (Weight updates)
+                  ┌──────────────────────────────┐
+                  │       AI Decision Plane      │
+                  │   - PPO + Graph Transformer  │ (model/)
+                  │   - Offline Train Loop       │ (train_offline.py)
+                  │   - Online Deploy Loop       │ (deploy_online.py)
+                  └──────────────────────────────┘
+                     ▲                       │
+       HTTP GET      │                       │ HTTP POST
+       /garro/state  │                       │ /garro/flow
+                     │                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    SDN Control Plane                         │
+│                    - OS-Ken OpenFlow 1.3 App                 │ (controller/garro_controller.py)
+│                    - Flask REST API Integration              │
+└──────────────────────────────────────────────────────────────┘
+                                  ▲
+                                  │ OpenFlow 1.3 (Southbound)
+                                  ▼
+┌──────────────────────────────────────────────────────────────┐
+│             SDN Data Plane (Phase 2 Emulation)               │
+│             - Mininet Network Emulation                      │ (topologies/mininet_nsfnet.py)
+│             - Open vSwitch (OVS) Kernel Datapath             │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### Core Components
+### Module Descriptions
 
 1. **State Encoder (`model/graph_transformer.py`)**:
    - Converts the NetworkX topology graph (carrying node CPU/buffer load and edge capacity/delay/utilization metrics) into a PyTorch Geometric (PyG) `Data` object.
@@ -58,14 +63,26 @@ schproject/
    - Generates traffic matrix requests using Poisson arrivals.
    - Generates **microbursts** (temporary elephant flows at 5× base rate with a 10% probability) to stress-test routing resilience.
 
+5. **OS-Ken Controller Application (`controller/garro_controller.py`)**:
+   - Standard OS-Ken OpenFlow 1.3 controller application.
+   - Listens to switch connection and link discovery events (via LLDP) to construct and maintain a live NetworkX `DiGraph` topology.
+   - Periodically polls connected switches for port statistics to compute network utilization.
+   - Integrates an internal **Flask web server** running on an eventlet green thread to serve a Northbound REST API (`GET /garro/state`, `GET /garro/topology`, `POST /garro/flow`).
+   - Receives path updates from the AI plane and pushes OpenFlow 1.3 Flow Mod entries along the network switches.
+
+6. **Mininet Network Topology (`topologies/mininet_nsfnet.py`)**:
+   - Instantiates a live emulated NSFNET topology with 14 switches and 21 links.
+   - Attaches one host per switch with configured subnet IPs (`10.0.0.1`–`10.0.0.14`) to allow testing.
+   - Configures propagation delays matching the real physical topology nodes using Mininet TCLinks.
+
 ---
 
 ## ⚙️ Environment Setup
 
-GARRO is configured to run inside a pre-installed Python virtual environment (`garro_env`). 
+GARRO is configured to run inside a Python virtual environment (`garro_env`).
 
 ### Activate the Environment
-Before running training or evaluation scripts, always activate the virtual environment:
+Before running training, evaluation, or deployment scripts, activate the virtual environment:
 ```bash
 source garro_env/bin/activate
 ```
@@ -78,10 +95,11 @@ Dependencies are listed in [requirements.txt](file:///home/danny/schproject/requ
 - `networkx` (for topology graph representations)
 - `gymnasium` (RL environment framework)
 - `matplotlib` & `pandas` (for visualization and analysis)
+- `Flask` (for controller REST API integration)
 
 ---
 
-## 🚀 How to Execute Training
+## 🚀 Phase 1: Offline Digital Twin Training
 
 Train the agent offline in the Digital Twin environment by running `train_offline.py`.
 
@@ -107,7 +125,7 @@ python train_offline.py --topology <topology_name> --episodes <num_episodes>
 ### Training Outputs
 * **Checkpoints**: Periodic model weights are saved to `checkpoints/garro_<topology>_ep<N>.pt`.
 * **Final Model**: The converged weights are saved to `checkpoints/garro_<topology>_final.pt`.
-* **Training Curve**: A plot of episodic rewards over time is saved to `checkpoints/training_curve_<topology>.png` to track training health.
+* **Training Curve**: A plot of episodic rewards over time is saved to `checkpoints/training_curve_<topology>.png`.
 
 ### Understanding Training Metrics
 During updates, the script outputs the following diagnostic metrics:
@@ -116,53 +134,113 @@ During updates, the script outputs the following diagnostic metrics:
 - **Ent (Entropy)**: Policy diversity. Starts high (~1.6 for $K=5$ paths) as the agent explores randomly, and should steadily decrease (to ~0.3–0.6) as the agent becomes confident in its routing decisions.
 - **KL (KL Divergence)**: Difference between the old and updated policy. PPO clips this; values should stay very low ($<0.02$) to guarantee stable learning.
 
----
-
-## 📊 How to Run Benchmarking & Evaluation
-
-To evaluate the performance of your trained agent against traditional SDN routing baselines, run `evaluate.py`.
+### How to Run Benchmarking & Evaluation
+To evaluate the performance of your trained agent against traditional SDN routing baselines in the Digital Twin, run `evaluate.py`.
 
 ```bash
 python evaluate.py --checkpoint <path_to_checkpoint> --topology <topology_name> --episodes <num_episodes>
 ```
 
-### Example Command
+* **Example**:
+  ```bash
+  python evaluate.py \
+    --checkpoint checkpoints/garro_nsfnet_final.pt \
+    --topology nsfnet \
+    --episodes 500
+  ```
+* **Compared Baselines**:
+  - **OSPF (Open Shortest Path First)**: A static shortest-path heuristic choosing the path with the minimum delay (Dijkstra).
+  - **ECMP (Equal-Cost Multi-Path)**: Distributes traffic round-robin across the candidate paths without network utilization awareness.
+  - **Random**: Randomly selects path options (defines the lower performance bound).
+* **Outputs**: Table saved to `eval_results_<topology>.csv` and comparison bar chart saved to `eval_results_<topology>.png`.
+
+---
+
+## 🌐 Phase 2: Live Mininet Emulation
+
+Phase 2 runs the DRL agent in a closed loop, routing real traffic demands in an emulated SDN network.
+
+### Prerequisites (System-Wide)
+Running Mininet and Open vSwitch (OVS) requires root permissions (`sudo`) and system-wide packages. They **cannot** be run inside the Python virtual environment.
+- On Ubuntu/Debian:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install mininet openvswitch-switch
+  ```
+- **If using WSL2**, you must ensure the OVS kernel module or service is started before running:
+  ```bash
+  sudo service openvswitch-switch start
+  ```
+
+### Step-by-Step Emulation Execution
+You will need **three separate terminal sessions** to execute the loop.
+
+#### 1. Terminal A: Start the OS-Ken Controller
+Activate the environment and start the OpenFlow controller app.
 ```bash
-python evaluate.py \
-  --checkpoint checkpoints/garro_nsfnet_final.pt \
-  --topology nsfnet \
-  --episodes 500
+source garro_env/bin/activate
+osken-manager controller/garro_controller.py --observe-links
 ```
 
-### Compared Baselines
-- **OSPF (Open Shortest Path First)**: A static shortest-path heuristic choosing the path with the minimum delay (Dijkstra).
-- **ECMP (Equal-Cost Multi-Path)**: Distributes traffic round-robin across the candidate paths without network utilization awareness.
-- **Random**: Randomly selects path options (defines the lower performance bound).
-- **GARRO**: The trained RL agent selecting paths based on GAT-encoded telemetry features.
+#### 2. Terminal B: Launch the Mininet Topology (Requires Sudo)
+Launch the emulated data plane using system Python.
+```bash
+sudo python topologies/mininet_nsfnet.py
+```
+*(This starts the Mininet prompt `mininet>` once topology initialization is complete).*
 
-### Evaluation Outputs
-* **CSV Table (`eval_results_<topology>.csv`)**: Tracks mean reward, standard deviation, minimum, and maximum rewards across all evaluation episodes.
-* **Bar Chart Plot (`eval_results_<topology>.png`)**: A clean comparison bar chart of the average rewards achieved by each algorithm.
-
----
-
-## 🛠️ Configuration Details (`config.yaml`)
-
-The file `config.yaml` controls all parameters. Key settings include:
-
-* **Routing Path Options (`network.k_paths: 5`)**: Number of candidate shortest-paths calculated between each source-destination pair.
-* **M/M/1/K Queue Settings (`mm1k`)**:
-  - `buffer_capacity: 50`: Limit of queue slots per link interface. Lower values increase packet drop rate (stress testing).
-  - `base_arrival_rate`: Average packet arrival rate.
-  - `base_service_rate`: Queue packet processing speed.
-* **Reward Formula Weights (`reward_weights`)**:
-  $$\text{Reward} = \alpha_1 \cdot \text{Throughput} - \alpha_2 \cdot \text{Delay} - \alpha_3 \cdot \text{Packet Loss} - \alpha_4 \cdot \text{Link Variance}$$
-  - Default weights: $\alpha_1=0.4$ (Throughput), $\alpha_2=0.3$ (Delay), $\alpha_3=0.2$ (Loss), $\alpha_4=0.1$ (Load Balance).
-* **PPO Hyperparameters (`ppo`)**: Epoch updates, learning rates, clip coefficients, and batch sizes.
+#### 3. Terminal C: Launch the DRL Online Agent Loop
+Activate the environment and run the deployment loop script pointing to your trained checkpoint file.
+```bash
+source garro_env/bin/activate
+python deploy_online.py --checkpoint checkpoints/garro_nsfnet_final.pt --topology nsfnet
+```
+*(The agent will start polling the REST API on port `8080` every 2 seconds, selecting paths, and installing them onto the switches).*
 
 ---
 
-## 🖥️ CPU vs. GPU Performance Guide
+## 🧪 Verifying Live Traffic Routing in Mininet
 
-* **CPU Execution (Default)**: Thanks to the **detached latent pre-computation** implemented in `ppo_agent.py`, the training loop runs at a highly optimized speed (~4.0s per episode on NSFNET).
-* **GPU Speedup**: If a CUDA-enabled GPU is detected, PyTorch will automatically offload graph encoding and model updates to CUDA. This cuts NSFNET training times down from hours to minutes.
+Once all three terminal sessions are running, use the Mininet CLI (**Terminal B**) to generate traffic and verify routing behavior:
+
+### 1. Test Network Connectivity
+Verify that all hosts can reach one another:
+```bash
+mininet> pingall
+```
+
+### 2. Verify Flow Rules Installation
+Ping from host `h1` to host `h14` to trigger PPO-driven routing:
+```bash
+mininet> h1 ping h14 -c 10
+```
+While the ping is running, inspect Terminal C and Terminal A. You will see:
+- Terminal C log: `[Deploy] Flow installed: [1, 4, 5, 12, 14] | 10.0.0.1→10.0.0.14`
+- Terminal A log: `[GARRO] Installed path: [1, 4, 5, 12, 14] for 10.0.0.1 → 10.0.0.14`
+
+### 3. Dump Switch Flows
+To inspect the exact OpenFlow rules installed on any switch (e.g. switch `s1`), run this command in a normal bash shell:
+```bash
+sudo ovs-ofctl -O OpenFlow13 dump-flows s1
+```
+You will see routing flow rules matching IP source `10.0.0.1` and destination `10.0.0.14` routing packets to the corresponding output ports chosen by the PPO agent.
+
+### 4. Benchmarking Throughput
+To run a bandwidth throughput test using iperf:
+```bash
+mininet> h1 iperf -s &
+mininet> h14 iperf -c 10.0.0.1 -t 30
+```
+This generates traffic between `h1` and `h14` for 30 seconds, forcing the agent to continuously monitor utilization changes and dynamically adjust paths to avoid link congestion.
+
+---
+
+## 🔧 Troubleshooting Guide
+
+| Issue | Cause | Fix |
+|---|---|---|
+| `AttributeError: module 'os_ken.base.app_manager' has no attribute 'RyuApp'` | legacy Ryu class name conflict | Ensure controller uses `app_manager.OSKenApp` instead of `RyuApp` (fixed in repository). |
+| `ModuleNotFoundError: No module named 'os_ken.app.wsgi'` | WSGI module missing/renamed in OS-Ken | Expose APIs using Flask on a background eventlet thread (fixed in repository). |
+| `OVS is not running` error in Mininet | Open vSwitch service inactive | Run `sudo service openvswitch-switch start` before launching Mininet. |
+| Mininet cannot connect to controller | Controller not running or ports bound | Ensure OS-Ken is running in Terminal A first. Check for bound ports: `ss -tlnp \| grep -E "6633\|8080"`. |
+| LLM weight updates fail | `.env` file does not contain keys | The agentic layer defaults to standard fallback weights (`alpha1..alpha4`) if `GEMINI_API_KEY` is not present, avoiding application crash. |
