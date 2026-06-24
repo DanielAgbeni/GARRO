@@ -1,0 +1,48 @@
+network:
+  k_paths: 5                      # K-shortest paths to consider per (src, dst) pair
+  topology: "nsfnet"              # nsfnet | geant2 | fat_tree
+  polling_interval: 2.0           # Seconds between telemetry polls (Phase 2)
+
+mm1k:
+  buffer_capacity: 50             # K packets per switch port buffer
+  base_arrival_rate: 100.0        # λ base (packets/sec)
+  base_service_rate: 150.0        # μ base (packets/sec)
+
+graph_transformer:
+  hidden_dim: 128                 # Latent embedding dimension
+  num_heads: 4                    # Multi-head attention heads
+  num_layers: 3                   # Number of TransformerConv layers
+  dropout: 0.1
+
+ppo:
+  lr_actor: 3.0e-4                # Actor + encoder learning rate
+  lr_critic: 1.0e-3               # Critic head learning rate
+  gamma: 0.99                     # Discount factor
+  gae_lambda: 0.95                # GAE λ for advantage estimation
+  clip_epsilon: 0.2               # PPO clipping parameter ε
+  update_epochs: 10               # Number of PPO update epochs per rollout
+  batch_size: 64                  # Mini-batch size for PPO updates
+  entropy_coef: 0.01              # Entropy bonus coefficient
+
+training:
+  offline_episodes: 50000         # Total training episodes
+  max_steps_per_episode: 200      # Steps per episode before reset
+  checkpoint_interval: 1000       # Save checkpoint every N episodes
+  checkpoint_path: "checkpoints/"
+  update_interval: 512            # Rollout steps collected before each PPO update
+
+reward_weights:
+  alpha1: 0.4                     # Throughput weight
+  alpha2: 0.3                     # Delay weight
+  alpha3: 0.2                     # Packet loss weight
+  alpha4: 0.1                     # Link utilization variance weight
+
+controller:
+  host: "127.0.0.1"
+  rest_port: 8080
+  openflow_port: 6633
+
+agentic:
+  provider: "gemini"              # gemini | openai
+  model: "gemini-1.5-flash"
+  temperature: 0.1

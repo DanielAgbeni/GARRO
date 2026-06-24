@@ -1,0 +1,33 @@
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+garro_env/
+
+# Deep Learning checkpoints and training artifacts
+checkpoints/
+*.pt
+*.pth
+
+# Evaluation outputs and figures
+eval_results_*.png
+eval_results_*.csv
+training_curve_*.png
+
+# Operating system / IDE configurations
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.gemini/
+.agents/
+
+# Local configuration / Environment variables
+.env
+.env.local
+.env.*.local
