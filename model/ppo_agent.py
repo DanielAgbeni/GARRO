@@ -209,6 +209,10 @@ class PPOAgent:
 
         self.buffer = RolloutBuffer()
 
+        # Automatic Mixed Precision for hardware acceleration (Tensor Cores on GPU)
+        self.enable_autocast = (self.device.type == "cuda")
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.enable_autocast)
+
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def _encode(self, graph: nx.Graph) -> torch.Tensor:
@@ -217,7 +221,8 @@ class PPOAgent:
         pyg.batch = torch.zeros(
             pyg.x.size(0), dtype=torch.long, device=self.device
         )
-        latent = self.encoder(pyg)
+        with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+            latent = self.encoder(pyg)
         return latent   # [1, hidden_dim]
 
     @torch.no_grad()
@@ -245,7 +250,8 @@ class PPOAgent:
         for i in range(min(len(candidate_paths), self.k_paths)):
             mask[i] = True
 
-        action, log_prob, value = self.ac_net.get_action(latent, mask)
+        with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+            action, log_prob, value = self.ac_net.get_action(latent, mask)
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     # ── PPO Update ────────────────────────────────────────────────────────────
@@ -303,13 +309,14 @@ class PPOAgent:
         # This avoids double-backward and keeps mini-batch updates O(T) not O(T×epochs).
         graph_states = self.buffer.states
         with torch.no_grad():
-            det_list: List[torch.Tensor] = []
-            for graph_snap in graph_states:
-                pyg = nx_to_pyg(graph_snap, self.device)
-                pyg.batch = torch.zeros(
-                    pyg.x.size(0), dtype=torch.long, device=self.device
-                )
-                det_list.append(self.encoder(pyg))
+            with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+                det_list: List[torch.Tensor] = []
+                for graph_snap in graph_states:
+                    pyg = nx_to_pyg(graph_snap, self.device)
+                    pyg.batch = torch.zeros(
+                        pyg.x.size(0), dtype=torch.long, device=self.device
+                    )
+                    det_list.append(self.encoder(pyg))
         all_latents_det = torch.cat(det_list, dim=0)   # [T, hidden_dim] detached
 
         # ── AC-Net PPO Mini-Batch Updates (no encoder grad — fast) ───────
@@ -329,28 +336,31 @@ class PPOAgent:
                 b_adv     = adv_tensor[idx]
                 b_returns = returns_tensor[idx]
 
-                logits, values_pred = self.ac_net(b_latents)
-                dist          = Categorical(logits=logits)
-                new_log_probs = dist.log_prob(b_actions)
-                entropy       = dist.entropy().mean()
+                with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+                    logits, values_pred = self.ac_net(b_latents)
+                    dist          = Categorical(logits=logits)
+                    new_log_probs = dist.log_prob(b_actions)
+                    entropy       = dist.entropy().mean()
 
-                ratio = torch.exp(new_log_probs - b_old_lp)
-                surr1 = ratio * b_adv
-                surr2 = torch.clamp(
-                    ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps
-                ) * b_adv
-                policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss  = F.mse_loss(values_pred, b_returns)
-                loss        = (
-                    policy_loss
-                    + 0.5 * value_loss
-                    - self.entropy_coef * entropy
-                )
+                    ratio = torch.exp(new_log_probs - b_old_lp)
+                    surr1 = ratio * b_adv
+                    surr2 = torch.clamp(
+                        ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps
+                    ) * b_adv
+                    policy_loss = -torch.min(surr1, surr2).mean()
+                    value_loss  = F.mse_loss(values_pred, b_returns)
+                    loss        = (
+                        policy_loss
+                        + 0.5 * value_loss
+                        - self.entropy_coef * entropy
+                    )
 
                 self.opt_ac.zero_grad()
-                loss.backward()
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.opt_ac)
                 nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
-                self.opt_ac.step()
+                self.scaler.step(self.opt_ac)
+                self.scaler.update()
 
                 with torch.no_grad():
                     approx_kl = (b_old_lp - new_log_probs).mean().item()
@@ -365,37 +375,41 @@ class PPOAgent:
         enc_idx  = torch.randperm(T, device=self.device)[:enc_size]
 
         enc_lat_list: List[torch.Tensor] = []
-        for i in enc_idx.tolist():
-            pyg = nx_to_pyg(graph_states[i], self.device)
-            pyg.batch = torch.zeros(
-                pyg.x.size(0), dtype=torch.long, device=self.device
-            )
-            enc_lat_list.append(self.encoder(pyg))   # grad tracked here
+        with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
+            for i in enc_idx.tolist():
+                pyg = nx_to_pyg(graph_states[i], self.device)
+                pyg.batch = torch.zeros(
+                    pyg.x.size(0), dtype=torch.long, device=self.device
+                )
+                enc_lat_list.append(self.encoder(pyg))   # grad tracked here
 
-        enc_latents = torch.cat(enc_lat_list, dim=0)
-        logits_e, vals_e = self.ac_net(enc_latents)
-        dist_e    = Categorical(logits=logits_e)
-        new_lp_e  = dist_e.log_prob(actions[enc_idx])
-        ent_e     = dist_e.entropy().mean()
-        ratio_e   = torch.exp(new_lp_e - old_log_probs[enc_idx])
-        adv_e     = adv_tensor[enc_idx]
-        ret_e     = returns_tensor[enc_idx]
-        surr1_e   = ratio_e * adv_e
-        surr2_e   = torch.clamp(
-            ratio_e, 1.0 - self.clip_eps, 1.0 + self.clip_eps
-        ) * adv_e
-        enc_loss  = (
-            -torch.min(surr1_e, surr2_e).mean()
-            + 0.5 * F.mse_loss(vals_e, ret_e)
-            - self.entropy_coef * ent_e
-        )
+            enc_latents = torch.cat(enc_lat_list, dim=0)
+            logits_e, vals_e = self.ac_net(enc_latents)
+            dist_e    = Categorical(logits=logits_e)
+            new_lp_e  = dist_e.log_prob(actions[enc_idx])
+            ent_e     = dist_e.entropy().mean()
+            ratio_e   = torch.exp(new_lp_e - old_log_probs[enc_idx])
+            adv_e     = adv_tensor[enc_idx]
+            ret_e     = returns_tensor[enc_idx]
+            surr1_e   = ratio_e * adv_e
+            surr2_e   = torch.clamp(
+                ratio_e, 1.0 - self.clip_eps, 1.0 + self.clip_eps
+            ) * adv_e
+            enc_loss  = (
+                -torch.min(surr1_e, surr2_e).mean()
+                + 0.5 * F.mse_loss(vals_e, ret_e)
+                - self.entropy_coef * ent_e
+            )
+
         self.opt_encoder.zero_grad()
-        enc_loss.backward()
+        self.scaler.scale(enc_loss).backward()
+        self.scaler.unscale_(self.opt_encoder)
         nn.utils.clip_grad_norm_(
             list(self.encoder.parameters()) + list(self.ac_net.parameters()),
             max_norm=0.5,
         )
-        self.opt_encoder.step()
+        self.scaler.step(self.opt_encoder)
+        self.scaler.update()
 
         self.buffer.clear()
         return {k: float(np.mean(v)) for k, v in metrics.items()}

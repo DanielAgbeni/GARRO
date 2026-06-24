@@ -55,6 +55,13 @@ TOPOLOGY_MAP = {
 # ── Main training loop ────────────────────────────────────────────────────────
 
 def main(args):
+    # ── Optimize Threading for Maximum Hardware Utilization ──
+    import multiprocessing
+    num_cores = multiprocessing.cpu_count()
+    torch.set_num_threads(num_cores)
+    os.environ["OMP_NUM_THREADS"] = str(num_cores)
+    os.environ["MKL_NUM_THREADS"] = str(num_cores)
+
     # ── Load configuration ────────────────────────────────────────────────
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
