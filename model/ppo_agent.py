@@ -156,8 +156,8 @@ class RolloutBuffer:
 class FastGraphConverter:
     """
     Highly optimized NetworkX to PyTorch Geometric converter.
-    Caches structural properties (node mappings, edge indices, star node index)
-    to completely avoid nested Python loops and sorting during training.
+    Caches structural properties and writes dynamic attributes on CPU
+    before moving to GPU in a single copy operation to prevent CUDA stalls.
     """
     def __init__(self, G: nx.Graph, device: torch.device):
         self.device = device
@@ -165,9 +165,9 @@ class FastGraphConverter:
         self.n_real = len(self.nodes)
         self.idx_map = {n: i for i, n in enumerate(self.nodes)}
         
-        # Pre-allocate node features: [n_real + 1, 5]
-        self.x = torch.zeros((self.n_real + 1, 5), dtype=torch.float32, device=device)
-        self.x[self.n_real, 4] = 1.0  # Star node flag = 1.0, others = 0.0
+        # Pre-allocate node features on CPU
+        self.x_cpu = torch.zeros((self.n_real + 1, 5), dtype=torch.float32, device="cpu")
+        self.x_cpu[self.n_real, 4] = 1.0  # Star node flag = 1.0, others = 0.0
         
         self.edges = list(G.edges())
         self.n_edges = len(self.edges)
@@ -177,9 +177,9 @@ class FastGraphConverter:
             self.edge_indices.append((self.idx_map[u], self.idx_map[v]))
             
         n_total_edges = 2 * self.n_edges + 2 * self.n_real
-        self.edge_index = torch.zeros((2, n_total_edges), dtype=torch.long, device=device)
         
-        # Build edge index mapping
+        # Keep edge index on target device (never changes)
+        self.edge_index = torch.zeros((2, n_total_edges), dtype=torch.long, device=device)
         curr = 0
         for u_idx, v_idx in self.edge_indices:
             self.edge_index[0, curr] = u_idx
@@ -196,39 +196,40 @@ class FastGraphConverter:
             self.edge_index[1, curr+1] = star_idx
             curr += 2
             
-        # Pre-allocate edge attributes
-        self.edge_attr = torch.zeros((n_total_edges, 4), dtype=torch.float32, device=device)
+        # Pre-allocate edge attributes on CPU
+        self.edge_attr_cpu = torch.zeros((n_total_edges, 4), dtype=torch.float32, device="cpu")
         
-        # Fill static edge attributes (bandwidth and delays)
+        # Fill static edge attributes (bandwidth and delays) on CPU
         curr = 0
         for u, v in self.edges:
             d = G.edges[u, v]
             bw_norm = float(np.clip(d.get("bandwidth", 1000) / 10_000.0, 0.0, 1.0))
             delay_norm = float(np.clip(d.get("delay", 1.0) / 100.0, 0.0, 1.0))
-            self.edge_attr[curr, 0] = bw_norm
-            self.edge_attr[curr, 2] = delay_norm
-            self.edge_attr[curr+1, 0] = bw_norm
-            self.edge_attr[curr+1, 2] = delay_norm
+            self.edge_attr_cpu[curr, 0] = bw_norm
+            self.edge_attr_cpu[curr, 2] = delay_norm
+            self.edge_attr_cpu[curr+1, 0] = bw_norm
+            self.edge_attr_cpu[curr+1, 2] = delay_norm
             curr += 2
             
         # Star edge attributes: [1.0, 0.0, 0.0, 0.0]
         for i in range(self.n_real):
-            self.edge_attr[curr, 0] = 1.0
-            self.edge_attr[curr+1, 0] = 1.0
+            self.edge_attr_cpu[curr, 0] = 1.0
+            self.edge_attr_cpu[curr+1, 0] = 1.0
             curr += 2
 
     def convert(self, G: nx.Graph) -> Data:
-        """Vectorized lookup to build the Data object."""
+        """Build the Data object on CPU and move to GPU in one operation."""
         cpu = nx.get_node_attributes(G, 'cpu')
         buf = nx.get_node_attributes(G, 'buffer_occ')
         ing = nx.get_node_attributes(G, 'ingress_rate')
         egr = nx.get_node_attributes(G, 'egress_rate')
         
+        # Fast write to CPU tensor
         for idx, n in enumerate(self.nodes):
-            self.x[idx, 0] = cpu.get(n, 0.5)
-            self.x[idx, 1] = buf.get(n, 0.3)
-            self.x[idx, 2] = ing.get(n, 0.5)
-            self.x[idx, 3] = egr.get(n, 0.5)
+            self.x_cpu[idx, 0] = cpu.get(n, 0.5)
+            self.x_cpu[idx, 1] = buf.get(n, 0.3)
+            self.x_cpu[idx, 2] = ing.get(n, 0.5)
+            self.x_cpu[idx, 3] = egr.get(n, 0.5)
             
         util = nx.get_edge_attributes(G, 'utilization')
         loss = nx.get_edge_attributes(G, 'packet_loss')
@@ -238,13 +239,17 @@ class FastGraphConverter:
             ut = util.get((u, v), util.get((v, u), 0.0))
             ls = loss.get((u, v), loss.get((v, u), 0.0))
             
-            self.edge_attr[curr, 1] = ut
-            self.edge_attr[curr, 3] = ls
-            self.edge_attr[curr+1, 1] = ut
-            self.edge_attr[curr+1, 3] = ls
+            self.edge_attr_cpu[curr, 1] = ut
+            self.edge_attr_cpu[curr, 3] = ls
+            self.edge_attr_cpu[curr+1, 1] = ut
+            self.edge_attr_cpu[curr+1, 3] = ls
             curr += 2
             
-        return Data(x=self.x.clone(), edge_index=self.edge_index, edge_attr=self.edge_attr.clone())
+        # Push completed tensors to device in single transfers
+        x_gpu = self.x_cpu.to(self.device, non_blocking=True)
+        edge_attr_gpu = self.edge_attr_cpu.to(self.device, non_blocking=True)
+            
+        return Data(x=x_gpu.clone(), edge_index=self.edge_index, edge_attr=edge_attr_gpu.clone())
 
 
 # ── PPO Agent ─────────────────────────────────────────────────────────────────
