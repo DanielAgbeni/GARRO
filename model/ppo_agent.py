@@ -127,14 +127,17 @@ class RolloutBuffer:
 
     def add(
         self,
-        state:    nx.Graph,
+        state,
         action:   int,
         log_prob: float,
         reward:   float,
         value:    float,
         done:     bool,
     ):
-        self.states.append(state)
+        if isinstance(state, Data):
+            self.states.append(state.clone())
+        else:
+            self.states.append(state)
         self.actions.append(action)
         self.log_probs.append(log_prob)
         self.rewards.append(reward)
@@ -146,6 +149,102 @@ class RolloutBuffer:
 
     def __len__(self) -> int:
         return len(self.actions)
+
+
+# ── Fast Graph Converter ──────────────────────────────────────────────────────
+
+class FastGraphConverter:
+    """
+    Highly optimized NetworkX to PyTorch Geometric converter.
+    Caches structural properties (node mappings, edge indices, star node index)
+    to completely avoid nested Python loops and sorting during training.
+    """
+    def __init__(self, G: nx.Graph, device: torch.device):
+        self.device = device
+        self.nodes = sorted(G.nodes())
+        self.n_real = len(self.nodes)
+        self.idx_map = {n: i for i, n in enumerate(self.nodes)}
+        
+        # Pre-allocate node features: [n_real + 1, 5]
+        self.x = torch.zeros((self.n_real + 1, 5), dtype=torch.float32, device=device)
+        self.x[self.n_real, 4] = 1.0  # Star node flag = 1.0, others = 0.0
+        
+        self.edges = list(G.edges())
+        self.n_edges = len(self.edges)
+        
+        self.edge_indices = []
+        for u, v in self.edges:
+            self.edge_indices.append((self.idx_map[u], self.idx_map[v]))
+            
+        n_total_edges = 2 * self.n_edges + 2 * self.n_real
+        self.edge_index = torch.zeros((2, n_total_edges), dtype=torch.long, device=device)
+        
+        # Build edge index mapping
+        curr = 0
+        for u_idx, v_idx in self.edge_indices:
+            self.edge_index[0, curr] = u_idx
+            self.edge_index[1, curr] = v_idx
+            self.edge_index[0, curr+1] = v_idx
+            self.edge_index[1, curr+1] = u_idx
+            curr += 2
+            
+        star_idx = self.n_real
+        for i in range(self.n_real):
+            self.edge_index[0, curr] = star_idx
+            self.edge_index[1, curr] = i
+            self.edge_index[0, curr+1] = i
+            self.edge_index[1, curr+1] = star_idx
+            curr += 2
+            
+        # Pre-allocate edge attributes
+        self.edge_attr = torch.zeros((n_total_edges, 4), dtype=torch.float32, device=device)
+        
+        # Fill static edge attributes (bandwidth and delays)
+        curr = 0
+        for u, v in self.edges:
+            d = G.edges[u, v]
+            bw_norm = float(np.clip(d.get("bandwidth", 1000) / 10_000.0, 0.0, 1.0))
+            delay_norm = float(np.clip(d.get("delay", 1.0) / 100.0, 0.0, 1.0))
+            self.edge_attr[curr, 0] = bw_norm
+            self.edge_attr[curr, 2] = delay_norm
+            self.edge_attr[curr+1, 0] = bw_norm
+            self.edge_attr[curr+1, 2] = delay_norm
+            curr += 2
+            
+        # Star edge attributes: [1.0, 0.0, 0.0, 0.0]
+        for i in range(self.n_real):
+            self.edge_attr[curr, 0] = 1.0
+            self.edge_attr[curr+1, 0] = 1.0
+            curr += 2
+
+    def convert(self, G: nx.Graph) -> Data:
+        """Vectorized lookup to build the Data object."""
+        cpu = nx.get_node_attributes(G, 'cpu')
+        buf = nx.get_node_attributes(G, 'buffer_occ')
+        ing = nx.get_node_attributes(G, 'ingress_rate')
+        egr = nx.get_node_attributes(G, 'egress_rate')
+        
+        for idx, n in enumerate(self.nodes):
+            self.x[idx, 0] = cpu.get(n, 0.5)
+            self.x[idx, 1] = buf.get(n, 0.3)
+            self.x[idx, 2] = ing.get(n, 0.5)
+            self.x[idx, 3] = egr.get(n, 0.5)
+            
+        util = nx.get_edge_attributes(G, 'utilization')
+        loss = nx.get_edge_attributes(G, 'packet_loss')
+        
+        curr = 0
+        for u, v in self.edges:
+            ut = util.get((u, v), util.get((v, u), 0.0))
+            ls = loss.get((u, v), loss.get((v, u), 0.0))
+            
+            self.edge_attr[curr, 1] = ut
+            self.edge_attr[curr, 3] = ls
+            self.edge_attr[curr+1, 1] = ut
+            self.edge_attr[curr+1, 3] = ls
+            curr += 2
+            
+        return Data(x=self.x.clone(), edge_index=self.edge_index, edge_attr=self.edge_attr.clone())
 
 
 # ── PPO Agent ─────────────────────────────────────────────────────────────────
@@ -211,13 +310,20 @@ class PPOAgent:
 
         # Automatic Mixed Precision for hardware acceleration (Tensor Cores on GPU)
         self.enable_autocast = (self.device.type == "cuda")
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.enable_autocast)
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.enable_autocast)
+        self.graph_converter = None
+        self.last_pyg = None
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
     def _encode(self, graph: nx.Graph) -> torch.Tensor:
         """Convert NetworkX graph → latent state vector [1, hidden_dim]."""
-        pyg  = nx_to_pyg(graph, self.device)
+        if self.graph_converter is None:
+            self.graph_converter = FastGraphConverter(graph, self.device)
+            
+        pyg = self.graph_converter.convert(graph)
+        self.last_pyg = pyg
+        
         pyg.batch = torch.zeros(
             pyg.x.size(0), dtype=torch.long, device=self.device
         )
@@ -305,14 +411,16 @@ class PPOAgent:
         adv_tensor = (adv_tensor - adv_tensor.mean()) / (adv_tensor.std() + 1e-8)
 
         # ── Pre-encode all states (detached) — FAST, no grad, done once ─────
-        # The encoder is updated separately via a single gradient pass below.
-        # This avoids double-backward and keeps mini-batch updates O(T) not O(T×epochs).
+        # States are stored directly as Data objects in the buffer to avoid redundant conversions
         graph_states = self.buffer.states
         with torch.no_grad():
             with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
                 det_list: List[torch.Tensor] = []
-                for graph_snap in graph_states:
-                    pyg = nx_to_pyg(graph_snap, self.device)
+                for pyg in graph_states:
+                    if not isinstance(pyg, Data):
+                        if self.graph_converter is None:
+                            self.graph_converter = FastGraphConverter(pyg, self.device)
+                        pyg = self.graph_converter.convert(pyg)
                     pyg.batch = torch.zeros(
                         pyg.x.size(0), dtype=torch.long, device=self.device
                     )
@@ -377,7 +485,11 @@ class PPOAgent:
         enc_lat_list: List[torch.Tensor] = []
         with torch.autocast(device_type=self.device.type, enabled=self.enable_autocast):
             for i in enc_idx.tolist():
-                pyg = nx_to_pyg(graph_states[i], self.device)
+                pyg = graph_states[i]
+                if not isinstance(pyg, Data):
+                    if self.graph_converter is None:
+                        self.graph_converter = FastGraphConverter(pyg, self.device)
+                    pyg = self.graph_converter.convert(pyg)
                 pyg.batch = torch.zeros(
                     pyg.x.size(0), dtype=torch.long, device=self.device
                 )

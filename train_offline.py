@@ -117,9 +117,9 @@ def main(args):
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        # 3. Store transition — graph snapshot deep-copied for buffer
+        # 3. Store transition — PyG Data representation stored directly (bypasses deepcopy)
         agent.buffer.add(
-            state    = copy.deepcopy(env.G),
+            state    = agent.last_pyg,
             action   = action,
             log_prob = log_prob,
             reward   = reward,
