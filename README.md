@@ -369,3 +369,10 @@ This generates traffic between `h1` and `h14` for 30 seconds, forcing the agent 
 | `OVS is not running` error in Mininet | Open vSwitch service inactive | Run `sudo service openvswitch-switch start` before launching Mininet. |
 | Mininet cannot connect to controller | Controller not running or ports bound | Ensure OS-Ken is running in Terminal A first. Check for bound ports: `ss -tlnp \| grep -E "6633\|8080"`. |
 | LLM weight updates fail | `.env` file does not contain keys | The agentic layer defaults to standard fallback weights (`alpha1..alpha4`) if `GEMINI_API_KEY` is not present, avoiding application crash. |
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](file:///home/danny/schproject/LICENSE) file for details.
+
