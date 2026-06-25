@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GARRO — SDN AI Routing Dashboard</title>
+    <!-- Google Font: Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <!-- Vis.js Standalone for network topology -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0c10;
+            --panel-bg: rgba(31, 40, 51, 0.45);
+            --accent-cyan: #66fcf1;
+            --accent-blue: #45f3ff;
+            --accent-purple: #8a2be2;
+            --text-main: #c5c6c7;
+            --text-bright: #ffffff;
+            --text-muted: #6f7d8c;
+            --border-color: rgba(102, 252, 241, 0.15);
+            --card-glow: rgba(69, 243, 255, 0.05);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(31, 40, 51, 0.3) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(138, 43, 226, 0.1) 0px, transparent 50%);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        /* ── Header ── */
+        header {
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(11, 12, 16, 0.8);
+            backdrop-filter: blur(12px);
+            z-index: 10;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-badge {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: var(--bg-color);
+            font-weight: 800;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+            box-shadow: 0 0 15px rgba(102, 252, 241, 0.3);
+        }
+
+        h1 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            color: var(--text-bright);
+            letter-spacing: 0.5px;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(102, 252, 241, 0.05);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 0.85rem;
+            color: var(--accent-cyan);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--accent-cyan);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--accent-cyan);
+            animation: pulse 2s infinite;
+        }
+
+        /* ── Layout Grid ── */
+        .container {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 20px;
+            padding: 20px 40px 40px 40px;
+            max-width: 1800px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        /* ── Sidebar Panels ── */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            transition: box-shadow 0.3s ease, border 0.3s ease;
+        }
+
+        .panel:hover {
+            box-shadow: 0 8px 32px 0 var(--card-glow);
+            border-color: rgba(102, 252, 241, 0.3);
+        }
+
+        h2 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-bright);
+            margin-bottom: 18px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-left: 3px solid var(--accent-cyan);
+            padding-left: 10px;
+        }
+
+        /* ── Operator Intent Console ── */
+        .intent-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .intent-input {
+            width: 100%;
+            height: 90px;
+            background: rgba(11, 12, 16, 0.6);
+            border: 1px solid rgba(197, 198, 199, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            color: var(--text-bright);
+            font-size: 0.9rem;
+            resize: none;
+            outline: none;
+            transition: border-color 0.3s ease;
+        }
+
+        .intent-input:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        .submit-btn {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+            color: var(--bg-color);
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 5px 15px rgba(69, 243, 255, 0.4);
+        }
+
+        .submit-btn:active {
+            transform: translateY(1px);
+        }
+
+        .submit-btn:disabled {
+            background: var(--text-muted);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .active-intent-display {
+            background: rgba(11, 12, 16, 0.4);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            border: 1px dashed rgba(102, 252, 241, 0.2);
+        }
+
+        /* ── Reward Weights Panel ── */
+        .weight-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .weight-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .weight-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+        }
+
+        .weight-name {
+            color: var(--text-bright);
+            font-weight: 600;
+        }
+
+        .weight-val {
+            color: var(--accent-cyan);
+            font-weight: bold;
+        }
+
+        .progress-bar-bg {
+            width: 100%;
+            height: 8px;
+            background: rgba(11, 12, 16, 0.6);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+            width: 0%;
+            transition: width 0.8s cubic-bezier(0.1, 0.8, 0.2, 1);
+            border-radius: 4px;
+        }
+
+        /* ── Active Flows Panel ── */
+        .flow-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .flow-card {
+            background: rgba(11, 12, 16, 0.4);
+            border: 1px solid rgba(197, 198, 199, 0.1);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 0.85rem;
+        }
+
+        .flow-header {
+            display: flex;
+            justify-content: space-between;
+            font-weight: 600;
+            color: var(--text-bright);
+            margin-bottom: 6px;
+        }
+
+        .flow-path {
+            color: var(--accent-cyan);
+            word-break: break-all;
+            font-family: monospace;
+            margin-top: 4px;
+        }
+
+        /* ── Main Topology Panel ── */
+        .topology-area {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            position: relative;
+        }
+
+        #mynetwork {
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            min-height: 550px;
+            background-color: rgba(11, 12, 16, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+        }
+
+        /* ── Spinners & Animations ── */
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(11, 12, 16, 0.2);
+            border-top: 2px solid var(--bg-color);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(102, 252, 241, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(102, 252, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(102, 252, 241, 0); }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-container">
+            <span class="logo-badge">AI-SDN</span>
+            <h1>GARRO routing controller</h1>
+        </div>
+        <div class="status-pill">
+            <div class="status-dot"></div>
+            <span>Live Emulation Active</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- ── Sidebar Console & Metrics ── -->
+        <div class="sidebar">
+            <!-- Operator Intent Panel -->
+            <div class="panel">
+                <h2>Operator Intent</h2>
+                <form class="intent-form" id="intent-form">
+                    <textarea class="intent-input" id="intent-input" placeholder="Type routing objective (e.g. Optimize latency, balance load...)"></textarea>
+                    <button class="submit-btn" id="submit-btn" type="submit">
+                        <span class="spinner" id="btn-spinner"></span>
+                        <span id="btn-text">Submit Intent</span>
+                    </button>
+                </form>
+                <div style="margin-top: 15px;">
+                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px;">Active Intent</p>
+                    <div class="active-intent-display" id="active-intent">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Reward Weights Panel -->
+            <div class="panel">
+                <h2>Reward Weights</h2>
+                <div class="weight-container">
+                    <div class="weight-row">
+                        <div class="weight-info">
+                            <span class="weight-name">Throughput (α1)</span>
+                            <span class="weight-val" id="val-alpha1">0%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="fill-alpha1"></div>
+                        </div>
+                    </div>
+                    <div class="weight-row">
+                        <div class="weight-info">
+                            <span class="weight-name">Delay (α2)</span>
+                            <span class="weight-val" id="val-alpha2">0%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="fill-alpha2"></div>
+                        </div>
+                    </div>
+                    <div class="weight-row">
+                        <div class="weight-info">
+                            <span class="weight-name">Packet Loss (α3)</span>
+                            <span class="weight-val" id="val-alpha3">0%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="fill-alpha3"></div>
+                        </div>
+                    </div>
+                    <div class="weight-row">
+                        <div class="weight-info">
+                            <span class="weight-name">Load Balance (α4)</span>
+                            <span class="weight-val" id="val-alpha4">0%</span>
+                        </div>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="fill-alpha4"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Flows Panel -->
+            <div class="panel">
+                <h2>Active PPO Flows</h2>
+                <div class="flow-list" id="flow-list">
+                    <p style="font-size: 0.85rem; color: var(--text-muted);">No active flows detected. Run a ping in Mininet to route traffic.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Main Map Canvas ── -->
+        <div class="topology-area">
+            <div id="mynetwork"></div>
+        </div>
+    </div>
+
+    <script>
+        let network = null;
+        let nodesDataset = new vis.DataSet([]);
+        let edgesDataset = new vis.DataSet([]);
+        let isTopologyBuilt = false;
+        let lastIntent = "";
+
+        // Initialize Vis.js network mapping
+        function initNetwork() {
+            const container = document.getElementById('mynetwork');
+            const data = {
+                nodes: nodesDataset,
+                edges: edgesDataset
+            };
+            const options = {
+                nodes: {
+                    font: {
+                        size: 13,
+                        face: 'Outfit',
+                        weight: 'bold'
+                    },
+                    borderWidth: 2,
+                    shadow: true
+                },
+                edges: {
+                    smooth: {
+                        type: 'continuous'
+                    },
+                    width: 2,
+                    shadow: true
+                },
+                physics: {
+                    barnesHut: {
+                        gravitationalConstant: -2500,
+                        centralGravity: 0.3,
+                        springLength: 95,
+                        springConstant: 0.04
+                    },
+                    stabilization: {
+                        iterations: 150
+                    }
+                },
+                interaction: {
+                    hover: true
+                }
+            };
+            network = new vis.Network(container, data, options);
+        }
+
+        // Periodic Dashboard telemetry loop
+        async function fetchState() {
+            try {
+                const response = await fetch('/garro/state');
+                if (!response.ok) return;
+                const state = await response.json();
+
+                // 1. Update Intent display
+                const intentEl = document.getElementById('active-intent');
+                intentEl.innerText = state.current_intent || "No intent received.";
+                if (state.current_intent !== lastIntent) {
+                    lastIntent = state.current_intent;
+                    // Reset loading status if intent was updated successfully
+                    document.getElementById('submit-btn').disabled = false;
+                    document.getElementById('btn-spinner').style.display = 'none';
+                    document.getElementById('btn-text').innerText = 'Submit Intent';
+                }
+
+                // 2. Update Weights
+                const weights = state.current_weights || {};
+                const alpha1 = weights.alpha1 || 0.0;
+                const alpha2 = weights.alpha2 || 0.0;
+                const alpha3 = weights.alpha3 || 0.0;
+                const alpha4 = weights.alpha4 || 0.0;
+
+                updateProgressBar('alpha1', alpha1);
+                updateProgressBar('alpha2', alpha2);
+                updateProgressBar('alpha3', alpha3);
+                updateProgressBar('alpha4', alpha4);
+
+                // 3. Build Topology if not done
+                if (!isTopologyBuilt && state.nodes && state.nodes.length > 0) {
+                    buildInitialTopology(state.nodes, state.edges);
+                }
+
+                // 4. Update Active Flows UI Panel
+                updateFlowsList(state.active_paths);
+
+                // 5. Highlight active paths on the canvas
+                highlightActivePaths(state.active_paths, state.edges);
+
+            } catch (err) {
+                console.error("Failed to fetch state telemetry:", err);
+            }
+        }
+
+        function updateProgressBar(id, value) {
+            const percentage = Math.round(value * 100);
+            document.getElementById(`val-${id}`).innerText = `${percentage}%`;
+            document.getElementById(`fill-${id}`).style.width = `${percentage}%`;
+        }
+
+        function buildInitialTopology(nodes, edges) {
+            nodesDataset.clear();
+            edgesDataset.clear();
+
+            // Inject switches & corresponding hosts
+            nodes.forEach(n => {
+                const dpid = n.dpid;
+                // Add Switch
+                nodesDataset.add({
+                    id: `s_${dpid}`,
+                    label: `Switch ${dpid}`,
+                    shape: 'dot',
+                    size: 20,
+                    color: {
+                        background: '#1f2833',
+                        border: '#66fcf1',
+                        highlight: { background: '#66fcf1', border: '#45f3ff' }
+                    },
+                    font: { color: '#ffffff' }
+                });
+
+                // Add Host
+                nodesDataset.add({
+                    id: `h_${dpid}`,
+                    label: `Host ${dpid}\n10.0.0.${dpid}`,
+                    shape: 'box',
+                    color: {
+                        background: '#0b0c10',
+                        border: '#45f3ff',
+                        highlight: { background: '#1f2833', border: '#66fcf1' }
+                    },
+                    font: { color: '#ffffff' }
+                });
+
+                // Link Host to its local Switch
+                edgesDataset.add({
+                    id: `link_h_${dpid}_s_${dpid}`,
+                    from: `h_${dpid}`,
+                    to: `s_${dpid}`,
+                    color: { color: '#bdc3c7', opacity: 0.5 },
+                    width: 1,
+                    dashes: true
+                });
+            });
+
+            // Inject Switch-to-Switch links
+            edges.forEach(e => {
+                const edgeId = `edge_${e.src}_${e.dst}`;
+                // Avoid double adding bidirectional edges in visualization
+                const revId = `edge_${e.dst}_${e.src}`;
+                if (!edgesDataset.get(edgeId) && !edgesDataset.get(revId)) {
+                    edgesDataset.add({
+                        id: edgeId,
+                        from: `s_${e.src}`,
+                        to: `s_${e.dst}`,
+                        color: { color: '#c5c6c7', opacity: 0.3 },
+                        width: 2
+                    });
+                }
+            });
+
+            isTopologyBuilt = true;
+        }
+
+        function updateFlowsList(activePaths) {
+            const container = document.getElementById('flow-list');
+            if (!activePaths || Object.keys(activePaths).length === 0) {
+                container.innerHTML = `<p style="font-size: 0.85rem; color: var(--text-muted);">No active flows detected. Run a ping in Mininet to route traffic.</p>`;
+                return;
+            }
+
+            let html = "";
+            for (const [demand, path] of Object.entries(activePaths)) {
+                html += `
+                    <div class="flow-card">
+                        <div class="flow-header">
+                            <span>🚀 Flow Active</span>
+                            <span style="color: var(--accent-cyan); font-weight:bold;">PPO-Routed</span>
+                        </div>
+                        <div style="font-size:0.8rem; color: var(--text-main);">${demand.replace('->', ' ➔ ')}</div>
+                        <div class="flow-path">Path: [${path.join(' → ')}]</div>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        }
+
+        function highlightActivePaths(activePaths, edges) {
+            if (!isTopologyBuilt) return;
+
+            // Reset all edges to default styles
+            edgesDataset.forEach(edge => {
+                if (edge.id.startsWith('link_h_')) {
+                    edgesDataset.update({
+                        id: edge.id,
+                        color: { color: '#bdc3c7', opacity: 0.5 },
+                        width: 1,
+                        dashes: true,
+                        arrows: ''
+                    });
+                } else {
+                    edgesDataset.update({
+                        id: edge.id,
+                        color: { color: '#c5c6c7', opacity: 0.3 },
+                        width: 2,
+                        arrows: ''
+                    });
+                }
+            });
+
+            if (!activePaths) return;
+
+            // Highlight links along active paths
+            for (const [demand, path] of Object.entries(activePaths)) {
+                if (path.length < 2) continue;
+
+                // Split demand e.g. "10.0.0.1->10.0.0.14" to find host IDs
+                const hosts = demand.split('->');
+                const srcHostDpid = parseInt(hosts[0].split('.').pop());
+                const dstHostDpid = parseInt(hosts[1].split('.').pop());
+
+                // Highlight src host link
+                const srcHostEdgeId = `link_h_${srcHostDpid}_s_${srcHostDpid}`;
+                if (edgesDataset.get(srcHostEdgeId)) {
+                    edgesDataset.update({
+                        id: srcHostEdgeId,
+                        color: { color: '#45f3ff', opacity: 1.0 },
+                        width: 3.5,
+                        dashes: false,
+                        arrows: 'to'
+                    });
+                }
+
+                // Highlight dst host link
+                const dstHostEdgeId = `link_h_${dstHostDpid}_s_${dstHostDpid}`;
+                if (edgesDataset.get(dstHostEdgeId)) {
+                    edgesDataset.update({
+                        id: dstHostEdgeId,
+                        color: { color: '#45f3ff', opacity: 1.0 },
+                        width: 3.5,
+                        dashes: false,
+                        arrows: 'to'
+                    });
+                }
+
+                // Highlight switch-to-switch path
+                for (let i = 0; i < path.length - 1; i++) {
+                    const u = path[i];
+                    const v = path[i+1];
+                    const edgeId = `edge_${u}_${v}`;
+                    const revId = `edge_${v}_${u}`;
+
+                    const matchingEdge = edgesDataset.get(edgeId) || edgesDataset.get(revId);
+                    if (matchingEdge) {
+                        edgesDataset.update({
+                            id: matchingEdge.id,
+                            color: { color: '#66fcf1', opacity: 1.0 },
+                            width: 5,
+                            arrows: 'to'
+                        });
+                    }
+                }
+            }
+        }
+
+        // Intent Submission Form handling
+        document.getElementById('intent-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const inputEl = document.getElementById('intent-input');
+            const intentText = inputEl.value.trim();
+            if (!intentText) return;
+
+            // Update UI state to loading
+            document.getElementById('submit-btn').disabled = true;
+            document.getElementById('btn-spinner').style.display = 'inline-block';
+            document.getElementById('btn-text').innerText = 'LLM processing...';
+
+            try {
+                const response = await fetch('/garro/intent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ intent: intentText })
+                });
+
+                if (response.ok) {
+                    inputEl.value = "";
+                } else {
+                    alert("Failed to submit intent to controller.");
+                    document.getElementById('submit-btn').disabled = false;
+                    document.getElementById('btn-spinner').style.display = 'none';
+                    document.getElementById('btn-text').innerText = 'Submit Intent';
+                }
+            } catch (err) {
+                console.error("Error submitting intent:", err);
+                document.getElementById('submit-btn').disabled = false;
+                document.getElementById('btn-spinner').style.display = 'none';
+                document.getElementById('btn-text').innerText = 'Submit Intent';
+            }
+        });
+
+        // Initialize mapping and start update intervals
+        window.addEventListener('load', () => {
+            initNetwork();
+            fetchState();
+            setInterval(fetchState, 1500);
+        });
+    </script>
+</body>
+</html>

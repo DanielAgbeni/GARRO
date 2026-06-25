@@ -23,14 +23,50 @@ from os_ken.lib import hub
 
 import json
 import time
+import os
 import networkx as nx
 from collections import defaultdict
 import eventlet
 import eventlet.wsgi
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 
-app = Flask("garro_controller_api")
+# Find template folder next to this controller file
+HERE = os.path.dirname(os.path.abspath(__file__))
+app = Flask("garro_controller_api", template_folder=os.path.join(HERE, "templates"))
 controller_instance = None
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template("index.html")
+
+
+@app.route("/garro/intent", methods=["GET", "POST"])
+def manage_intent():
+    if controller_instance is None:
+        return jsonify({"error": "Controller not initialized"}), 503
+    if request.method == "POST":
+        body = request.get_json(force=True, silent=True) or {}
+        intent = body.get("intent", "").strip()
+        if intent:
+            controller_instance.current_intent = intent
+            return jsonify({"status": "ok", "intent": intent})
+        return jsonify({"error": "Missing intent parameter"}), 400
+    return jsonify({"intent": controller_instance.current_intent})
+
+
+@app.route("/garro/weights", methods=["GET", "POST"])
+def manage_weights():
+    if controller_instance is None:
+        return jsonify({"error": "Controller not initialized"}), 503
+    if request.method == "POST":
+        body = request.get_json(force=True, silent=True) or {}
+        weights = body.get("weights")
+        if isinstance(weights, dict):
+            controller_instance.current_weights = weights
+            return jsonify({"status": "ok", "weights": weights})
+        return jsonify({"error": "Invalid weights format"}), 400
+    return jsonify({"weights": controller_instance.current_weights})
 
 
 @app.route("/garro/state", methods=["GET"])
@@ -83,6 +119,9 @@ class GARROController(app_manager.OSKenApp):
         self.flow_stats: dict = defaultdict(dict)
         self.mac_to_port: dict = defaultdict(dict)  # dpid → mac → port
         self.pending_flows: list = []       # Flow rules waiting to be installed
+        self.active_paths: dict = {}        # "src_ip->dst_ip" -> dpid list
+        self.current_intent: str = "Balance load across all links while maintaining reasonable latency for mixed traffic."
+        self.current_weights: dict = {"alpha1": 0.4, "alpha2": 0.3, "alpha3": 0.2, "alpha4": 0.1}
 
         # Telemetry polling thread (every 2 seconds)
         self.monitor_thread = hub.spawn(self._monitor_loop)
@@ -276,6 +315,9 @@ class GARROController(app_manager.OSKenApp):
             self._add_flow(dp, priority, match, actions,
                            idle_timeout=60, hard_timeout=120)
 
+        # Track this path as active
+        self.active_paths[f"{src_ip}->{dst_ip}"] = path
+
         self.logger.info(
             f"[GARRO] Installed path: {path} for {src_ip} → {dst_ip}"
         )
@@ -313,4 +355,7 @@ class GARROController(app_manager.OSKenApp):
             "timestamp": time.time(),
             "nodes": nodes,
             "edges": edges,
+            "active_paths": self.active_paths,
+            "current_intent": self.current_intent,
+            "current_weights": self.current_weights,
         }

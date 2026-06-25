@@ -45,6 +45,24 @@ controller:
   openflow_port: 6633
 
 agentic:
-  provider: "gemini"              # gemini | openai
-  model: "gemini-1.5-flash"
+  # Choose any supported provider:
+  #   gemini   | openai  | groq    | mistral |
+  #   cohere   | together | ollama
+  provider: "groq"              # ← change this to switch providers
+
+  # Model name for the chosen provider — examples:
+  #   gemini   → gemini-1.5-flash  (free)
+  #   groq     → llama3-70b-8192   (free, fastest)
+  #   mistral  → mistral-small-latest
+  #   cohere   → command-r
+  #   together → meta-llama/Llama-3-70b-chat-hf
+  #   openai   → gpt-4o-mini
+  #   ollama   → llama3  (local, no key needed)
+  model: "openai/gpt-oss-120b"
+
   temperature: 0.1
+
+  # Only used when provider = ollama (local inference, no API key needed)
+  # Install: curl -fsSL https://ollama.com/install.sh | sh
+  # Pull model: ollama pull llama3
+  ollama_base_url: "http://localhost:11434"
