@@ -1,5 +1,7 @@
 # GARRO: Graph Attention Routing with Reinforcement Learning
 
+**GitHub Repository:** [github.com/DanielAgbeni/GARRO](https://github.com/DanielAgbeni/GARRO)
+
 GARRO is a Deep Reinforcement Learning (DRL) routing framework designed for Software-Defined Networks (SDN). It combines a **Graph Attention Transformer (GAT)** to capture complex network topologies and traffic states with **Proximal Policy Optimization (PPO)** to dynamically route traffic requests.
 
 This repository implements both **Phase 1: Offline Digital Twin Training** and **Phase 2: Live Mininet Emulation** using OS-Ken (a modern, Neutron-optimized fork of the Ryu SDN controller).
@@ -97,6 +99,35 @@ Dependencies are listed in [requirements.txt](file:///home/danny/schproject/requ
 - `matplotlib` & `pandas` (for visualization and analysis)
 - `Flask` (for controller REST API integration)
 
+### 🍏 Apple Silicon (M1/M2/M3/M4 macOS) Support
+
+GARRO fully supports native training on Apple Silicon chips (M-series) using Apple's GPU acceleration via **Metal Performance Shaders (MPS)**.
+
+#### 1. Running Phase 1 (Offline Training) on macOS
+To run training locally on your Mac with GPU/MPS acceleration:
+1. Ensure you have installed a native macOS python virtual environment.
+2. Install PyTorch with MPS support:
+   ```bash
+   pip install torch
+   ```
+3. Install PyTorch Geometric (PyG) dependencies compatible with your PyTorch macOS version:
+   ```bash
+   pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-$(python -c "import torch; print(torch.__version__)").html
+   pip install torch-geometric
+   ```
+4. Run the training script normally. The agent will auto-detect your M-series chip and display:
+   `Device      : mps  (Apple Metal Performance Shaders)` in the startup hardware banner:
+   ```bash
+   python train_offline.py --topology nsfnet --episodes 10000
+   ```
+
+#### 2. Running Phase 2 (Live Mininet Emulation) on macOS
+> [!IMPORTANT]
+> **Mininet is Linux-only and cannot run natively on macOS.**
+> To emulate the network topology on an Apple Silicon Mac, you must run it inside a Linux Virtual Machine (VM). We recommend:
+> * **UTM (Free/Open Source)** or **Parallels Desktop**: Set up an ARM64 Ubuntu Linux VM.
+> * Run both the OS-Ken Controller and Mininet inside that ARM64 Linux VM.
+
 ---
 
 ## 🚀 Phase 1: Offline Digital Twin Training
@@ -107,20 +138,114 @@ Train the agent offline in the Digital Twin environment by running `train_offlin
 python train_offline.py --topology <topology_name> --episodes <num_episodes>
 ```
 
-### Suggested Training Runs
+### 🌐 Multi-Topology Validation Strategy
 
-* **NSFNET (14 nodes) — Quick Sanity Check (10-15 mins on CPU)**
+To present an academically rigorous and reliable project, it is highly recommended to train and evaluate your agent across **all three topologies**. This proves that the GARRO routing agent can adapt to different types of network layouts (WAN vs. Data Center) and scales (14 to 80 nodes) without overfitting to a single network structure:
+
+1. **Topology Diversity**: Shows the model's ability to handle geographic WAN nodes with high propagation delays (NSFNET, GEANT2) as well as dense, symmetric, low-latency datacenter clusters (Fat-Tree).
+2. **Scale & Convergence Proof**: Confirms that the Graph Attention Network (GAT) generalizes well when the network size grows from small (14 switches) to very large (80 switches).
+3. **Load Balancing Resilience**: Proves the routing agent can handle highly irregular network links (GEANT2) just as well as standard hierarchical ones.
+
+---
+
+### 📊 Recommended Training Configurations
+
+Depending on your goal (quick testing vs. reliable publication-grade results), use the following recommended parameters:
+
+| Topology | Scale | Checkpoint ID | Sanity Check (Episodes) | Full Convergence (Recommended) | Approx. CPU Time | Key Learning Focus |
+|---|---|---|---|---|---|---|
+| **NSFNET** | 14 Nodes, 21 Links | `nsfnet` | 1,000 | **5,000 - 10,000** | ~1.5 hours (Full) | Basic routing loops, WAN propagation latency awareness. |
+| **GEANT2** | 24 Nodes, 37 Links | `geant2` | 5,000 | **15,000 - 20,000** | ~4 hours (Full) | Load balancing under asymmetric constraints & irregular cross-links. |
+| **Fat-Tree** | 80 Nodes, 112 Links | `fat_tree` | 10,000 | **40,000 - 50,000** | ~12 hours (Full) | Hierarchical paths, core-aggregation traffic spreading in data centers. |
+
+---
+
+### 🛠️ Execution Commands
+
+#### 1. NSFNET Training
+* **Sanity Check**:
   ```bash
   python train_offline.py --topology nsfnet --episodes 1000
   ```
-* **GEANT2 (24 nodes) — Mid-size Network (30-45 mins on CPU)**
+* **Full Reliable Training**:
+  ```bash
+  python train_offline.py --topology nsfnet --episodes 10000
+  ```
+
+#### 2. GEANT2 Training
+* **Sanity Check**:
   ```bash
   python train_offline.py --topology geant2 --episodes 5000
   ```
-* **Fat-Tree (80 nodes) — Full Scale Data Center (Overnight on CPU)**
+* **Full Reliable Training**:
   ```bash
-  python train_offline.py --topology fat_tree --episodes 20000
+  python train_offline.py --topology geant2 --episodes 20000
   ```
+
+#### 3. Fat-Tree Training
+* **Sanity Check**:
+  ```bash
+  python train_offline.py --topology fat_tree --episodes 10000
+  ```
+* **Full Reliable Training**:
+  ```bash
+  python train_offline.py --topology fat_tree --episodes 50000
+  ```
+
+
+### ☁️ Running on Google Colab (Recommended for GPU Acceleration)
+
+If you do not have a local GPU, you can train the offline model (Phase 1) on Google Colab to speed up the process using a free NVIDIA T4 GPU.
+
+#### 1. Setup your Colab Notebook
+1. Go to [Google Colab](https://colab.research.google.com).
+2. Change the Runtime Type to use a GPU:
+   * Click **Runtime** > **Change runtime type** > Select **T4 GPU** > Click **Save**.
+
+#### 2. Mount Google Drive (To save checkpoints)
+Add this to a notebook cell to mount your Drive so checkpoints aren't lost when your session ends:
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+#### 3. Clone the Project & Setup Files
+Clone your project repository or upload your files to Google Drive, then navigate into the directory:
+```bash
+# Example if using git:
+!git clone <your-repository-url> schproject
+%cd schproject
+```
+
+#### 4. Install Dependencies
+Colab has PyTorch preinstalled, but you must install PyTorch Geometric (PyG) and its dependencies compiled for Colab's specific PyTorch + CUDA version:
+```python
+import torch
+# Automatically detect installed PyTorch and CUDA versions to pull the correct PyG binary wheels
+pyg_url = f"https://data.pyg.org/whl/torch-{torch.__version__}.html"
+print(f"Installing PyG wheels from: {pyg_url}")
+
+!pip install torch-scatter torch-sparse -f {pyg_url}
+!pip install torch-geometric
+!pip install gymnasium networkx pyyaml tqdm pandas matplotlib Flask
+```
+
+#### 5. Run Training
+Run the training script using GPU acceleration. Checkpoints will automatically be saved to the `checkpoints/` folder.
+```bash
+!python train_offline.py --topology nsfnet --episodes 10000
+```
+
+#### 6. Save Checkpoints to Google Drive
+Ensure your trained weights are safely copied to your mounted Google Drive:
+```bash
+!cp -r checkpoints/ /content/drive/MyDrive/garro_checkpoints/
+```
+
+> [!WARNING]
+> **Phase 2 (Live Mininet Emulation) is NOT supported on Google Colab.** Mininet relies on loading custom Linux kernel modules (Open vSwitch) and low-level network namespace sandboxes, which are not allowed inside the lightweight Docker containers used by Google Colab. Emulation must always be run on your local Linux machine or WSL2 setup.
+
+---
 
 ### Training Outputs
 * **Checkpoints**: Periodic model weights are saved to `checkpoints/garro_<topology>_ep<N>.pt`.
