@@ -102,7 +102,8 @@ def mm1k_metrics_vec(
 
     # ── Little's Law → delay (ms) ───────────────────────────────────────────
     lam_eff    = lam * (1.0 - P_overflow)
-    mean_delay = np.where(lam_eff > eps, E_Q / lam_eff * 1_000.0, 1e6)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mean_delay = np.where(lam_eff > eps, E_Q / lam_eff * 1_000.0, 1e6)
 
     return E_Q, P_overflow, mean_delay
 
@@ -216,6 +217,59 @@ class MM1KNetworkEnv(GymEnv):
         )
         self.action_space = spaces.Discrete(self.K)
 
+        # ── Precompute the routing matrix mapping for background traffic ──
+        self._edge_to_pairs = [[] for _ in range(self.n_edges)]
+        edge_map = {}
+        for idx, (u, v) in enumerate(self.edges_list):
+            edge_map[(u, v)] = idx
+            edge_map[(v, u)] = idx
+
+        total_hops = 0
+        num_pairs = 0
+        for u in self._sorted_nodes:
+            for v in self._sorted_nodes:
+                if u == v:
+                    continue
+                paths = self._all_paths.get((u, v), [])
+                if paths:
+                    path = paths[0]
+                    total_hops += len(path) - 1
+                    num_pairs += 1
+                    for edge_u, edge_v in zip(path[:-1], path[1:]):
+                        e_idx = edge_map.get((edge_u, edge_v))
+                        if e_idx is not None:
+                            self._edge_to_pairs[e_idx].append((self._sorted_nodes.index(u), self._sorted_nodes.index(v)))
+
+        if total_hops > 0:
+            tg_base_rate = self.base_lam * self.n_edges / total_hops
+        else:
+            tg_base_rate = self.base_lam
+
+        print(f"[MM1KEnv] Precomputed average path length: {total_hops/num_pairs if num_pairs > 0 else 0:.2f} hops")
+        print(f"[MM1KEnv] Scaling TrafficGenerator base_rate from {self.base_lam} to {tg_base_rate:.2f} to match capacity")
+
+        cov = config.get("mm1k", {}).get("cov", 0.5)
+        burst_prob = config.get("mm1k", {}).get("burst_prob", 0.10)
+        burst_scale = config.get("mm1k", {}).get("burst_scale", 5.0)
+        ar_coeff = config.get("mm1k", {}).get("ar_coeff", 0.85)
+        tod_amplitude = config.get("mm1k", {}).get("tod_amplitude", 0.4)
+        tod_peak_hour = config.get("mm1k", {}).get("tod_peak_hour", 16.0)
+        steps_per_hour = config.get("mm1k", {}).get("steps_per_hour", 60.0)
+
+        from digital_twin.traffic_generator import TrafficGenerator
+        self.traffic_gen = TrafficGenerator(
+            graph=self.G,
+            base_rate=tg_base_rate,
+            cov=cov,
+            burst_prob=burst_prob,
+            burst_scale=burst_scale,
+            ar_coeff=ar_coeff,
+            tod_amplitude=tod_amplitude,
+            tod_peak_hour=tod_peak_hour,
+            steps_per_hour=steps_per_hour,
+            seed=None
+        )
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _precompute_paths_parallel(self, n_workers: int):
@@ -251,26 +305,16 @@ class MM1KNetworkEnv(GymEnv):
 
     def _simulate_traffic(self):
         """
-        Inject Modulated Gravity traffic onto all edges.
-
-        Fully vectorized with NumPy — processes all edges simultaneously
-        in a single pass without any Python-level for-loop:
-
-            burst_factor ~ Categorical([1.0, 2.0, 5.0], p=[0.70, 0.20, 0.10])
-            λ_edge = base_λ × burst_factor × Uniform(0.5, 1.5)
-            μ_edge = base_μ × Uniform(0.8, 1.2)
-
-        Updates edge attributes in the NetworkX graph and caches values
-        in numpy arrays for fast reward computation.
+        Inject Modulated Gravity traffic onto all edges using the TrafficGenerator.
         """
-        n = self.n_edges
+        T = self.traffic_gen.generate()
 
-        # Vectorized burst sampling
-        burst = np.random.choice(
-            [1.0, 2.0, 5.0], size=n, p=[0.70, 0.20, 0.10]
-        ).astype(np.float64)
-        self._lam_arr[:] = self.base_lam * burst * np.random.uniform(0.5, 1.5, n)
-        self._mu_arr[:]  = self.base_mu  * np.random.uniform(0.8, 1.2, n)
+        # Vectorized mapping of traffic matrix to edge arrival rates
+        for e_idx in range(self.n_edges):
+            self._lam_arr[e_idx] = sum(T[i, j] for i, j in self._edge_to_pairs[e_idx])
+
+        # Service rates are subject to some independent random variation
+        self._mu_arr[:] = self.base_mu * np.random.uniform(0.8, 1.2, self.n_edges)
 
         # Vectorized M/M/1/K — all edges at once
         _, P_overflow, delay_ms = mm1k_metrics_vec(
@@ -278,7 +322,7 @@ class MM1KNetworkEnv(GymEnv):
         )
         util = np.clip(self._lam_arr / (self._mu_arr + 1e-9), 0.0, 1.0)
 
-        # Write results back to NetworkX graph (unavoidable, but done once)
+        # Write results back to NetworkX graph
         for i, (u, v) in enumerate(self.edges_list):
             self.G.edges[u, v]["utilization"]  = float(util[i])
             self.G.edges[u, v]["packet_loss"]  = float(P_overflow[i])
@@ -399,6 +443,7 @@ class MM1KNetworkEnv(GymEnv):
     ) -> Tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         self.step_count = 0
+        self.traffic_gen.reset()
 
         nodes = list(self.G.nodes())
         pair  = self.np_random.choice(len(nodes), size=2, replace=False)
