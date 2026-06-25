@@ -4,6 +4,18 @@ GARRO Phase 1 — Offline Digital Twin Training.
 Trains the PPO + Graph Transformer agent entirely within the M/M/1/K
 Digital Twin environment.  No live network, Mininet, or OS-Ken required.
 
+System Resource Utilization
+-----------------------------
+* Auto-detects CUDA / MPS / CPU and trains on the best available device.
+* Pins all CPU-threading backends (PyTorch, OpenMP, MKL, OpenBLAS, NumExpr)
+  to use every available core — configured once at startup.
+* Scales batch_size and update_interval proportionally to CPU core count
+  so larger machines automatically collect bigger rollouts per update.
+* torch.compile is enabled by default (set compile_model: false in
+  config.yaml to disable during debugging).
+* Prints a hardware summary banner so you always know what hardware the
+  run is using.
+
 Usage
 -----
     # Activate virtual environment first:
@@ -18,6 +30,9 @@ Usage
     # Fat-Tree k=8 (80 nodes) — run overnight
     python train_offline.py --topology fat_tree --episodes 50000
 
+    # Disable torch.compile for debugging
+    python train_offline.py --topology nsfnet --no-compile
+
 Outputs
 -------
     checkpoints/garro_<topology>_ep<N>.pt       Periodic checkpoints
@@ -25,8 +40,9 @@ Outputs
     checkpoints/training_curve_<topology>.png    Reward plot
 """
 import argparse
-import copy
+import multiprocessing
 import os
+import time
 
 import matplotlib
 matplotlib.use("Agg")   # Non-interactive backend (safe in WSL / headless)
@@ -37,7 +53,7 @@ import yaml
 from tqdm import tqdm
 
 from digital_twin.mm1k_env import MM1KNetworkEnv
-from model.ppo_agent import PPOAgent
+from model.ppo_agent import PPOAgent, _best_device
 from topologies.nsfnet import get_nsfnet
 from topologies.geant2 import get_geant2
 from topologies.fat_tree import get_fat_tree
@@ -52,16 +68,42 @@ TOPOLOGY_MAP = {
 }
 
 
+# ── Hardware banner ───────────────────────────────────────────────────────────
+
+def _print_hardware_banner(
+    device: torch.device,
+    n_cores: int,
+    compile_model: bool,
+    topology: str,
+    total_episodes: int,
+    batch_size: int,
+    update_interval: int,
+) -> None:
+    """Print a formatted summary of the active hardware configuration."""
+    sep = "=" * 64
+    print(f"\n{sep}")
+    print(f"  GARRO Offline Training")
+    print(f"  Topology    : {topology.upper()}")
+    print(f"  Episodes    : {total_episodes:,}")
+    print(f"{'─'*64}")
+    print(f"  Device      : {device}  ", end="")
+    if device.type == "cuda":
+        props = torch.cuda.get_device_properties(device)
+        print(f"({props.name}, {props.total_memory/1e9:.1f} GB VRAM)")
+    elif device.type == "mps":
+        print("(Apple Metal Performance Shaders)")
+    else:
+        print("(CPU — torch.compile active)" if compile_model else "(CPU)")
+    print(f"  CPU cores   : {n_cores}")
+    print(f"  Batch size  : {batch_size}  (auto-scaled to core count)")
+    print(f"  Update every: {update_interval} steps")
+    print(f"  Compile     : {compile_model}")
+    print(f"{sep}\n")
+
+
 # ── Main training loop ────────────────────────────────────────────────────────
 
 def main(args):
-    # ── Optimize Threading for Maximum Hardware Utilization ──
-    import multiprocessing
-    num_cores = multiprocessing.cpu_count()
-    torch.set_num_threads(num_cores)
-    os.environ["OMP_NUM_THREADS"] = str(num_cores)
-    os.environ["MKL_NUM_THREADS"] = str(num_cores)
-
     # ── Load configuration ────────────────────────────────────────────────
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -70,38 +112,68 @@ def main(args):
 
     total_episodes   = args.episodes or config["training"]["offline_episodes"]
     checkpoint_dir   = config["training"]["checkpoint_path"]
-    update_interval  = config["training"].get("update_interval", 512)
     checkpoint_every = config["training"]["checkpoint_interval"]
+
+    # ── Hardware setup ────────────────────────────────────────────────────
+    n_cores = multiprocessing.cpu_count()
+
+    # Auto-detect best device (CUDA > MPS > CPU)
+    device = _best_device()
+
+    # Resolve compile flag: CLI flag > config.yaml > default True
+    if args.no_compile:
+        compile_model = False
+    else:
+        compile_model = config.get("training", {}).get("compile_model", True)
+
+    # ── Auto-scale batch size and update interval to CPU count ────────────
+    # Base values from config; scale linearly with core count so larger
+    # machines automatically use bigger rollouts between PPO updates.
+    base_batch      = config["ppo"]["batch_size"]
+    base_interval   = config["training"].get("update_interval", 512)
+
+    # Scale factor: 1× on 2 cores, 2× on 4 cores, etc.
+    scale = max(1, n_cores // 2)
+    batch_size      = base_batch * scale        # e.g. 64 → 128 on 4 cores
+    update_interval = base_interval * scale     # e.g. 512 → 1024 on 4 cores
+
+    # Write back so PPOAgent reads the scaled value
+    config["ppo"]["batch_size"] = batch_size
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\n{'='*60}")
-    print(f"  GARRO Offline Training")
-    print(f"  Topology : {args.topology.upper()}")
-    print(f"  Episodes : {total_episodes:,}")
-    print(f"  Device   : {device}")
-    print(f"{'='*60}\n")
+    _print_hardware_banner(
+        device, n_cores, compile_model, args.topology,
+        total_episodes, batch_size, update_interval,
+    )
 
     # ── Build graph + environment ─────────────────────────────────────────
     G   = TOPOLOGY_MAP[args.topology]()
     env = MM1KNetworkEnv(G, config)
 
     k_paths = config["network"]["k_paths"]
-    agent   = PPOAgent(config, k_paths=k_paths, device=device)
+    agent   = PPOAgent(
+        config,
+        k_paths=k_paths,
+        device=device,
+        compile_model=compile_model,
+    )
 
     print(f"[Init] Nodes: {G.number_of_nodes()} | "
           f"Edges: {G.number_of_edges()} | "
-          f"K-paths: {k_paths}\n")
+          f"K-paths: {k_paths}")
+    print(agent.hardware_summary())
+    print()
 
     # ── Training state ────────────────────────────────────────────────────
     obs, info = env.reset()
 
-    ep_idx            = 0
-    step_count        = 0
-    ep_reward         = 0.0
-    episode_rewards:  list = []          # One entry per completed episode
-    checkpoint_rewards: list = []        # Rolling window for checkpoint logging
+    ep_idx              = 0
+    step_count          = 0
+    ep_reward           = 0.0
+    episode_rewards:    list = []
+    checkpoint_rewards: list = []
+    t0                  = time.perf_counter()
 
     pbar = tqdm(total=total_episodes, desc="Training", unit="ep",
                 dynamic_ncols=True)
@@ -117,7 +189,7 @@ def main(args):
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        # 3. Store transition — PyG Data representation stored directly (bypasses deepcopy)
+        # 3. Store transition — PyG Data object stored directly (no deepcopy)
         agent.buffer.add(
             state    = agent.last_pyg,
             action   = action,
@@ -142,11 +214,14 @@ def main(args):
 
             # Periodic checkpoint + console log
             if ep_idx % checkpoint_every == 0:
-                avg_r = float(np.mean(checkpoint_rewards[-checkpoint_every:]))
+                elapsed  = time.perf_counter() - t0
+                avg_r    = float(np.mean(checkpoint_rewards[-checkpoint_every:]))
+                eps_per_s = ep_idx / elapsed
                 pbar.write(
                     f"[Ep {ep_idx:6d}/{total_episodes}] "
                     f"Avg Reward: {avg_r:+.4f} | "
-                    f"Steps: {step_count:,}"
+                    f"Steps: {step_count:,} | "
+                    f"Speed: {eps_per_s:.1f} ep/s"
                 )
                 ckpt_path = os.path.join(
                     checkpoint_dir,
@@ -171,7 +246,12 @@ def main(args):
     # ── Final checkpoint ──────────────────────────────────────────────────
     final_path = os.path.join(checkpoint_dir, f"garro_{args.topology}_final.pt")
     agent.save(final_path)
-    print(f"\n[Train] Final model saved → {final_path}")
+
+    elapsed = time.perf_counter() - t0
+    print(f"\n[Train] Finished {total_episodes:,} episodes in "
+          f"{elapsed/60:.1f} min  "
+          f"({total_episodes/elapsed:.1f} ep/s average)")
+    print(f"[Train] Final model saved → {final_path}")
 
     # ── Training curve plot ───────────────────────────────────────────────
     if episode_rewards:
@@ -195,7 +275,8 @@ def main(args):
         ax.set_ylabel("Cumulative Episode Reward")
         ax.set_title(
             f"GARRO Offline Training — {args.topology.upper()} "
-            f"({G.number_of_nodes()} nodes)"
+            f"({G.number_of_nodes()} nodes) | "
+            f"Device: {device}"
         )
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -228,6 +309,12 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Total training episodes (default: from config.yaml)",
+    )
+    parser.add_argument(
+        "--no-compile",
+        action="store_true",
+        default=False,
+        help="Disable torch.compile (useful for debugging/profiling)",
     )
     args = parser.parse_args()
     main(args)

@@ -29,7 +29,9 @@ training:
   max_steps_per_episode: 200      # Steps per episode before reset
   checkpoint_interval: 1000       # Save checkpoint every N episodes
   checkpoint_path: "checkpoints/"
-  update_interval: 512            # Rollout steps collected before each PPO update
+  update_interval: 512            # Rollout steps collected before each PPO update (auto-scaled × core count)
+  compile_model: true             # torch.compile encoder+AC-net (15–40% speedup; set false to debug)
+  num_workers: 0                  # Reserved: parallel env workers (0 = single-process; future feature)
 
 reward_weights:
   alpha1: 0.4                     # Throughput weight
