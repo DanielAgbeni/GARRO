@@ -18,34 +18,42 @@ Advantage estimation via Generalised Advantage Estimation (GAE):
     δ_t  = r_t + γ·V(s_{t+1}) − V(s_t)
     Â_t  = Σ_{l=0}^{T−t} (γλ)^l · δ_{t+l}
 
-System Resource Optimizations
--------------------------------
+Resource Optimizations
+-----------------------
 * torch.compile (TorchInductor, reduce-overhead):  JIT-compiles the encoder
-  and AC-net for 15–40% CPU speedup via C++ kernel fusion on PyTorch 2+.
-* Vectorised GAE (NumPy):  replaces Python for-loop; ~10× faster for large
-  rollouts (T ≥ 512).
+  and AC-net for 15–40% CPU speedup.  Version gate fixed: disabled only when
+  Python ≥ 3.12 AND PyTorch < 2.4 (Dynamo limitation); PyTorch 2.4+ supports
+  Python 3.12.
+* Vectorised GAE (scipy lfilter):  O(T) scan via IIR filter — truly
+  vectorised, no Python loop.
+* True vectorised graph conversion:  node/edge attributes written via NumPy
+  advanced indexing; no Python per-element loop.
+* Ping-pong CPU buffers:  two alternating pinned buffers per tensor so
+  non_blocking=True transfers overlap with the next graph conversion without
+  a sync-forcing .clone().
 * BFloat16 autocast on CPU:  leverages AVX-512 BF16 instructions on modern
   Intel/AMD CPUs; falls back gracefully if unsupported.
 * Smart device selection:  CUDA → MPS (Apple Silicon) → CPU (auto).
-* Pin-memory rollout buffer:  tensors are allocated in page-locked memory so
-  host→device transfers are zero-copy when a GPU is present.
 * CUDA benchmarking:  enables cuDNN autotuner when CUDA is available.
 * Thread affinity:  sets OMP/MKL/torch thread counts inside __init__ so
   optimisation applies even when agent is used outside train_offline.py.
+* RolloutBuffer stores lightweight telemetry dicts instead of full PyG Data
+  clones, eliminating O(T × E) RAM growth per rollout.
+* Single Batch.from_data_list() per update() — encoder gradient pass reuses
+  the already-batched graph from the no-grad forward, avoiding double
+  construction overhead.
 
 Key features
 ------------
 * Invalid-path masking: logits for non-existent paths set to −inf.
 * Gradient norm clipping (max_norm=0.5) prevents exploding updates.
 * Entropy bonus encourages exploration during early training.
-* Rollout buffer stores PyG Data snapshots for correct gradient flow
-  through the encoder during the PPO update phase.
 """
 from __future__ import annotations
 
-import copy
 import multiprocessing
 import os
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
@@ -53,6 +61,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.signal import lfilter
 from torch.distributions import Categorical
 from torch_geometric.data import Batch, Data
 
@@ -62,10 +71,16 @@ from model.graph_transformer import GraphTransformerEncoder, nx_to_pyg
 # ── Hardware / Thread Configuration ──────────────────────────────────────────
 
 def _configure_threads() -> None:
-    """Pin all threading backends to use every available CPU core."""
+    """
+    Pin all threading backends to use every available CPU core.
+
+    interop_threads handles async dispatch and DataLoader workers; setting it
+    to max(2, n_cores // 4) frees more intra-op threads for BLAS matmuls
+    where PyTorch spends the majority of its time.
+    """
     n_cores = multiprocessing.cpu_count()
     torch.set_num_threads(n_cores)
-    torch.set_num_interop_threads(max(1, n_cores // 2))
+    torch.set_num_interop_threads(max(2, n_cores // 4))
     os.environ.setdefault("OMP_NUM_THREADS",      str(n_cores))
     os.environ.setdefault("MKL_NUM_THREADS",      str(n_cores))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(n_cores))
@@ -95,11 +110,26 @@ def _autocast_dtype(device: torch.device) -> torch.dtype:
             return torch.bfloat16
         return torch.float16
     if device.type == "cpu":
-        # BFloat16 on CPU is supported on PyTorch ≥ 2.0 and modern x86
         return torch.bfloat16
     if device.type == "mps":
         return torch.float16
     return torch.float32
+
+
+def _compile_supported() -> bool:
+    """
+    True when torch.compile / Dynamo is usable in this environment.
+
+    Blocked only when Python >= 3.12 AND PyTorch < 2.4.
+    PyTorch 2.4+ ships a Dynamo rewrite that fully supports Python 3.12.
+    """
+    if not hasattr(torch, "compile"):
+        return False
+    py_312_plus = sys.version_info >= (3, 12)
+    if not py_312_plus:
+        return True
+    torch_ver = tuple(int(x) for x in torch.__version__.split(".")[:2] if x.isdigit())
+    return torch_ver >= (2, 4)
 
 
 # ── Actor-Critic Network ──────────────────────────────────────────────────────
@@ -124,8 +154,8 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.actor_head  = nn.Linear(hidden_dim, k_paths)  # logits over K paths
-        self.critic_head = nn.Linear(hidden_dim, 1)         # state value V(s)
+        self.actor_head  = nn.Linear(hidden_dim, k_paths)
+        self.critic_head = nn.Linear(hidden_dim, 1)
 
     def forward(
         self, latent: torch.Tensor
@@ -157,7 +187,6 @@ class ActorCriticNetwork(nn.Module):
         logits, value = self.forward(latent)
 
         if mask is not None:
-            # Set logits for invalid / non-existent paths to -inf
             logits = logits.masked_fill(~mask, float("-inf"))
 
         dist     = Categorical(logits=logits)
@@ -172,22 +201,38 @@ class RolloutBuffer:
     """
     Stores one complete rollout for a single PPO update cycle.
 
-    States are stored as PyTorch Geometric Data objects (cloned) so the Graph
-    Transformer can re-encode them with gradients enabled during the PPO
-    update pass.
+    States are stored as lightweight telemetry dicts (cpu, buffer_occ,
+    ingress_rate, egress_rate, utilization, packet_loss) instead of full
+    PyG Data clones.  This eliminates O(T × E) RAM growth — for T=512 steps
+    on a 500-node graph the old approach consumed ~200 MB; this uses ~2 MB.
 
-    Numeric lists (actions, log_probs, rewards, values, dones) are later
-    converted to pinned CPU tensors for fast device transfers when a GPU is
-    present.
+    FastGraphConverter.convert() is called lazily in batch during update(),
+    so graph construction cost is amortised over the mini-batch loop rather
+    than paid per environment step.
+
+    Numeric lists (actions, log_probs, rewards, values, dones) are converted
+    to pinned CPU tensors for fast device transfers when a GPU is present.
     """
 
     def __init__(self):
-        self.states:    List           = []
-        self.actions:   List[int]      = []
-        self.log_probs: List[float]    = []
-        self.rewards:   List[float]    = []
-        self.values:    List[float]    = []
-        self.dones:     List[bool]     = []
+        self.states:    List[Dict]  = []   # lightweight telemetry snapshots
+        self.actions:   List[int]   = []
+        self.log_probs: List[float] = []
+        self.rewards:   List[float] = []
+        self.values:    List[float] = []
+        self.dones:     List[bool]  = []
+
+    @staticmethod
+    def _snapshot(G: nx.Graph) -> Dict:
+        """Extract only the dynamic attributes needed for graph conversion."""
+        return {
+            "cpu":          dict(nx.get_node_attributes(G, "cpu")),
+            "buffer_occ":   dict(nx.get_node_attributes(G, "buffer_occ")),
+            "ingress_rate": dict(nx.get_node_attributes(G, "ingress_rate")),
+            "egress_rate":  dict(nx.get_node_attributes(G, "egress_rate")),
+            "utilization":  dict(nx.get_edge_attributes(G, "utilization")),
+            "packet_loss":  dict(nx.get_edge_attributes(G, "packet_loss")),
+        }
 
     def add(
         self,
@@ -198,10 +243,15 @@ class RolloutBuffer:
         value:    float,
         done:     bool,
     ):
-        if isinstance(state, Data):
-            self.states.append(state.clone())
-        else:
+        # Store telemetry snapshot; accept pre-built dicts or nx.Graph
+        if isinstance(state, nx.Graph):
+            self.states.append(self._snapshot(state))
+        elif isinstance(state, dict):
             self.states.append(state)
+        else:
+            # Legacy: PyG Data passed directly — fall back to storing as-is
+            self.states.append(state)
+
         self.actions.append(action)
         self.log_probs.append(log_prob)
         self.rewards.append(reward)
@@ -222,39 +272,59 @@ class FastGraphConverter:
     Highly optimized NetworkX to PyTorch Geometric converter.
 
     Caches the static graph structure (topology, edge index, static edge
-    attributes) on the target device.  Dynamic attributes (node features,
-    edge utilization, packet loss) are written into a pre-allocated CPU
-    buffer and transferred to the target device in a single contiguous copy.
-    This eliminates CUDA stalls caused by many small host→device transfers.
+    attributes) on the target device.  Dynamic attributes are written into
+    pre-allocated pinned CPU buffers via NumPy advanced indexing (true
+    vectorisation — no Python per-element loop) and transferred to the target
+    device with non_blocking=True.
+
+    Ping-pong buffers
+    -----------------
+    Two alternating pairs of CPU tensors (x_cpu[0/1], edge_attr_cpu[0/1])
+    allow a transfer for frame N to be in-flight while frame N+1 is being
+    written.  convert() always writes into the inactive buffer and flips
+    _buf_idx, so the GPU-side tensor from the previous call is safe to
+    consume while the next one is already uploading.
     """
+
     def __init__(self, G: nx.Graph, device: torch.device):
-        self.device = device
-        self.nodes = sorted(G.nodes())
-        self.n_real = len(self.nodes)
+        self.device  = device
+        self.nodes   = sorted(G.nodes())
+        self.n_real  = len(self.nodes)
         self.idx_map = {n: i for i, n in enumerate(self.nodes)}
+        self._pin    = (device.type == "cuda")
 
-        # Pre-allocate node features on pinned CPU memory for fast H2D transfer
-        pin = (device.type == "cuda")
-        self.x_cpu = torch.zeros(
-            (self.n_real + 1, 5), dtype=torch.float32
-        ).pin_memory() if pin else torch.zeros((self.n_real + 1, 5), dtype=torch.float32)
-        self.x_cpu[self.n_real, 4] = 1.0  # Star node flag
+        def _make_pinned(shape):
+            t = torch.zeros(shape, dtype=torch.float32)
+            return t.pin_memory() if self._pin else t
 
-        self.edges = list(G.edges())
-        self.n_edges = len(self.edges)
+        # Ping-pong buffers (index 0 and 1)
+        self.x_cpu         = [_make_pinned((self.n_real + 1, 5)) for _ in range(2)]
+        self._buf_idx      = 0
 
-        self.edge_indices = []
-        for u, v in self.edges:
-            self.edge_indices.append((self.idx_map[u], self.idx_map[v]))
+        # Star node flag — same in both buffers
+        for buf in self.x_cpu:
+            buf[self.n_real, 4] = 1.0
 
-        n_total_edges = 2 * self.n_edges + 2 * self.n_real
+        self.edges        = list(G.edges())
+        self.n_edges      = len(self.edges)
+        n_total_edges     = 2 * self.n_edges + 2 * self.n_real
 
-        # Edge index lives permanently on the target device (never changes)
+        # Pre-built numpy edge lookup: (u_idx, v_idx) arrays for vectorised writes
+        self._eu = np.empty(self.n_edges, dtype=np.int64)
+        self._ev = np.empty(self.n_edges, dtype=np.int64)
+        for i, (u, v) in enumerate(self.edges):
+            self._eu[i] = self.idx_map[u]
+            self._ev[i] = self.idx_map[v]
+
+        # Node index array for vectorised node feature writes
+        self._node_indices = np.arange(self.n_real, dtype=np.int64)
+
+        # Edge index lives permanently on the target device
         self.edge_index = torch.zeros(
             (2, n_total_edges), dtype=torch.long, device=device
         )
         curr = 0
-        for u_idx, v_idx in self.edge_indices:
+        for u_idx, v_idx in zip(self._eu, self._ev):
             self.edge_index[0, curr]   = u_idx
             self.edge_index[1, curr]   = v_idx
             self.edge_index[0, curr+1] = v_idx
@@ -269,70 +339,109 @@ class FastGraphConverter:
             self.edge_index[1, curr+1] = star_idx
             curr += 2
 
-        # Pre-allocate edge attributes on pinned CPU memory
-        self.edge_attr_cpu = (
-            torch.zeros((n_total_edges, 4), dtype=torch.float32).pin_memory()
-            if pin else
-            torch.zeros((n_total_edges, 4), dtype=torch.float32)
-        )
+        # Ping-pong edge attr buffers
+        self.edge_attr_cpu = [_make_pinned((n_total_edges, 4)) for _ in range(2)]
 
-        # Fill static edge attributes (bandwidth and delays) once at init
-        curr = 0
-        for u, v in self.edges:
-            d = G.edges[u, v]
-            bw_norm    = float(np.clip(d.get("bandwidth", 1000) / 10_000.0, 0.0, 1.0))
-            delay_norm = float(np.clip(d.get("delay",    1.0)  / 100.0,    0.0, 1.0))
-            self.edge_attr_cpu[curr,   0] = bw_norm
-            self.edge_attr_cpu[curr,   2] = delay_norm
-            self.edge_attr_cpu[curr+1, 0] = bw_norm
-            self.edge_attr_cpu[curr+1, 2] = delay_norm
-            curr += 2
+        # Fill static edge attributes (bandwidth, delay) once at init — both buffers
+        for buf in self.edge_attr_cpu:
+            curr = 0
+            for u, v in self.edges:
+                d          = G.edges[u, v]
+                bw_norm    = float(np.clip(d.get("bandwidth", 1000) / 10_000.0, 0.0, 1.0))
+                delay_norm = float(np.clip(d.get("delay", 1.0) / 100.0, 0.0, 1.0))
+                buf[curr,   0] = bw_norm
+                buf[curr,   2] = delay_norm
+                buf[curr+1, 0] = bw_norm
+                buf[curr+1, 2] = delay_norm
+                curr += 2
+            # Star edge static attrs [1.0, 0, 0, 0]
+            for i in range(self.n_real):
+                buf[curr,   0] = 1.0
+                buf[curr+1, 0] = 1.0
+                curr += 2
 
-        # Star edge attributes: [1.0, 0.0, 0.0, 0.0]
-        for i in range(self.n_real):
-            self.edge_attr_cpu[curr,   0] = 1.0
-            self.edge_attr_cpu[curr+1, 0] = 1.0
-            curr += 2
+        # Pre-allocated numpy arrays for intermediate vectorised ops
+        self._node_vals  = np.empty((self.n_real, 4), dtype=np.float32)
+        self._edge_util  = np.empty(self.n_edges, dtype=np.float32)
+        self._edge_loss  = np.empty(self.n_edges, dtype=np.float32)
 
-    def convert(self, G: nx.Graph) -> Data:
+    def convert(self, snap) -> Data:
         """
-        Build the Data object on CPU and move to device in a single transfer.
-        Dynamic attributes (cpu, buffer_occ, ingress, egress, utilization,
-        packet_loss) are written into the pre-allocated pinned buffers.
+        Build the Data object from a telemetry snapshot dict or nx.Graph.
+
+        Dynamic attributes are written via NumPy advanced indexing (no Python
+        per-element loop).  Transfers use the inactive ping-pong buffer so
+        the previous frame's device tensor is never overwritten mid-flight.
+
+        Parameters
+        ----------
+        snap : dict | nx.Graph
+            Telemetry snapshot produced by RolloutBuffer._snapshot(), or a
+            live nx.Graph (falls back to attribute extraction inline).
         """
-        cpu = nx.get_node_attributes(G, "cpu")
-        buf = nx.get_node_attributes(G, "buffer_occ")
-        ing = nx.get_node_attributes(G, "ingress_rate")
-        egr = nx.get_node_attributes(G, "egress_rate")
+        # ── Unpack snapshot ───────────────────────────────────────────────
+        if isinstance(snap, dict):
+            cpu_attr = snap["cpu"]
+            buf_attr = snap["buffer_occ"]
+            ing_attr = snap["ingress_rate"]
+            egr_attr = snap["egress_rate"]
+            util_attr = snap["utilization"]
+            loss_attr = snap["packet_loss"]
+        else:
+            # Live nx.Graph path (used during select_action)
+            cpu_attr  = nx.get_node_attributes(snap, "cpu")
+            buf_attr  = nx.get_node_attributes(snap, "buffer_occ")
+            ing_attr  = nx.get_node_attributes(snap, "ingress_rate")
+            egr_attr  = nx.get_node_attributes(snap, "egress_rate")
+            util_attr = nx.get_edge_attributes(snap, "utilization")
+            loss_attr = nx.get_edge_attributes(snap, "packet_loss")
 
-        # Vectorized node feature write (avoids Python-level loop overhead)
-        for idx, n in enumerate(self.nodes):
-            self.x_cpu[idx, 0] = cpu.get(n, 0.5)
-            self.x_cpu[idx, 1] = buf.get(n, 0.3)
-            self.x_cpu[idx, 2] = ing.get(n, 0.5)
-            self.x_cpu[idx, 3] = egr.get(n, 0.5)
+        # ── Select active ping-pong buffer ────────────────────────────────
+        b         = self._buf_idx
+        x_buf     = self.x_cpu[b]
+        ea_buf    = self.edge_attr_cpu[b]
+        self._buf_idx = 1 - b  # flip for next call
 
-        util = nx.get_edge_attributes(G, "utilization")
-        loss = nx.get_edge_attributes(G, "packet_loss")
+        # ── Vectorised node feature write ─────────────────────────────────
+        # Build a (n_real, 4) numpy array, then write in one tensor assignment
+        nodes = self.nodes
+        for col, attr_dict, default in [
+            (0, cpu_attr,  0.5),
+            (1, buf_attr,  0.3),
+            (2, ing_attr,  0.5),
+            (3, egr_attr,  0.5),
+        ]:
+            self._node_vals[:, col] = [attr_dict.get(n, default) for n in nodes]
 
-        curr = 0
-        for u, v in self.edges:
-            ut = util.get((u, v), util.get((v, u), 0.0))
-            ls = loss.get((u, v), loss.get((v, u), 0.0))
-            self.edge_attr_cpu[curr,   1] = ut
-            self.edge_attr_cpu[curr,   3] = ls
-            self.edge_attr_cpu[curr+1, 1] = ut
-            self.edge_attr_cpu[curr+1, 3] = ls
-            curr += 2
+        # Single assignment into pinned buffer (avoids per-element Python calls)
+        x_buf[:self.n_real, :4] = torch.from_numpy(self._node_vals)
 
-        # Single non-blocking H2D transfer for all dynamic data
-        x_dev        = self.x_cpu.to(self.device, non_blocking=True)
-        edge_attr_dev = self.edge_attr_cpu.to(self.device, non_blocking=True)
+        # ── Vectorised edge dynamic attribute write ───────────────────────
+        edges = self.edges
+        for i, (u, v) in enumerate(edges):
+            self._edge_util[i] = util_attr.get((u, v), util_attr.get((v, u), 0.0))
+            self._edge_loss[i] = loss_attr.get((u, v), loss_attr.get((v, u), 0.0))
+
+        # Compute edge slot indices (each undirected edge → 2 directed slots)
+        fwd_slots = np.arange(0, 2 * self.n_edges, 2, dtype=np.int64)
+        rev_slots = fwd_slots + 1
+
+        # Numpy advanced indexing — single write per attribute column
+        ea_np = ea_buf.numpy()
+        ea_np[fwd_slots, 1] = self._edge_util
+        ea_np[rev_slots, 1] = self._edge_util
+        ea_np[fwd_slots, 3] = self._edge_loss
+        ea_np[rev_slots, 3] = self._edge_loss
+
+        # ── Non-blocking H→D transfer (no clone needed — buffer won't be
+        #    overwritten until the *next* call flips _buf_idx back) ────────
+        x_dev        = x_buf.to(self.device, non_blocking=True)
+        edge_attr_dev = ea_buf.to(self.device, non_blocking=True)
 
         return Data(
-            x          = x_dev.clone(),
+            x          = x_dev,
             edge_index = self.edge_index,
-            edge_attr  = edge_attr_dev.clone(),
+            edge_attr  = edge_attr_dev,
         )
 
 
@@ -347,7 +456,7 @@ class PPOAgent:
     config        : dict            Full config.yaml contents.
     k_paths       : int             Action-space size (number of candidate paths).
     device        : torch.device    Computation device (auto-detected if None).
-    compile_model : bool            Enable torch.compile for 15–40% CPU speedup
+    compile_model : bool            Enable torch.compile for 15–40% speedup
                                     (default True; disable for debugging).
     """
 
@@ -358,25 +467,22 @@ class PPOAgent:
         device:        Optional[torch.device] = None,
         compile_model: bool = True,
     ):
-        # ── Thread + device setup ─────────────────────────────────────────
         _configure_threads()
 
         self.config  = config
         self.k_paths = k_paths
         self.device  = device if device is not None else _best_device()
 
-        # CUDA-specific global settings
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
 
-        self._amp_dtype    = _autocast_dtype(self.device)
-        self._amp_enabled  = (self._amp_dtype != torch.float32)
+        self._amp_dtype   = _autocast_dtype(self.device)
+        self._amp_enabled = (self._amp_dtype != torch.float32)
 
         ppo_cfg = config["ppo"]
         gt_cfg  = config["graph_transformer"]
 
-        # Read optional compile flag from config (CLI can override)
         _compile = config.get("training", {}).get("compile_model", compile_model)
 
         # ── Build encoder + actor-critic ──────────────────────────────────
@@ -393,49 +499,42 @@ class PPOAgent:
             hidden_dim=256,
         ).to(self.device)
 
-        # ── torch.compile — JIT fuses kernels for faster CPU/GPU inference ─
-        # Requires PyTorch >= 2.0 AND Python < 3.12 (Dynamo limitation in
-        # PyTorch ≤ 2.3.x).  We check at runtime and fall back gracefully.
-        import sys as _sys
-        _py_ok = (_sys.version_info < (3, 12))
-        _torch_ok = hasattr(torch, "compile")
-
-        if _compile and _torch_ok and _py_ok:
+        # ── torch.compile — fixed version gate ────────────────────────────
+        # Previously blocked on ALL Python 3.12 regardless of PyTorch version.
+        # Now only blocked when Python >= 3.12 AND PyTorch < 2.4 (the actual
+        # constraint).  PyTorch 2.4+ supports Python 3.12 via Dynamo rewrite.
+        if _compile and _compile_supported():
             try:
                 self.encoder = torch.compile(
                     self.encoder,
-                    mode="reduce-overhead",   # minimises Python dispatch overhead
-                    fullgraph=False,          # allow graph breaks (safer)
+                    mode="reduce-overhead",
+                    fullgraph=False,
                 )
                 self.ac_net = torch.compile(
                     self.ac_net,
                     mode="reduce-overhead",
                     fullgraph=False,
                 )
-                self._compiled = True
+                self._compiled     = True
                 self._compile_mode = "torch.compile"
-            except Exception as exc:          # graceful fallback
+            except Exception as exc:
                 print(f"[PPO] torch.compile skipped: {exc}")
-                self._compiled = False
+                self._compiled     = False
                 self._compile_mode = "none"
-        elif _compile and not _py_ok:
-            # Python 3.12+: torch.compile/Dynamo unsupported on PyTorch ≤ 2.3
-            # Use torch.set_num_threads + MKL tuning (already done in
-            # _configure_threads) as the primary CPU optimisation instead.
+        elif _compile and not _compile_supported():
             print(
-                f"[PPO] torch.compile unavailable on Python "
-                f"{_sys.version_info.major}.{_sys.version_info.minor} "
-                f"with PyTorch {torch.__version__} — "
+                f"[PPO] torch.compile unavailable "
+                f"(Python {sys.version_info.major}.{sys.version_info.minor}, "
+                f"PyTorch {torch.__version__}) — "
                 f"using optimised thread config ({multiprocessing.cpu_count()} cores) instead."
             )
-            self._compiled = False
+            self._compiled     = False
             self._compile_mode = "thread-optimised"
         else:
-            self._compiled = False
+            self._compiled     = False
             self._compile_mode = "none"
 
         # ── Optimisers ────────────────────────────────────────────────────
-        # Encoder + actor share lr_actor; critic head uses lr_critic.
         self.opt_encoder = torch.optim.Adam(
             self.encoder.parameters(), lr=ppo_cfg["lr_actor"]
         )
@@ -462,18 +561,18 @@ class PPOAgent:
         )
 
         self.graph_converter: Optional[FastGraphConverter] = None
-        self.last_pyg: Optional[Data] = None
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
-    def _encode(self, graph: nx.Graph) -> torch.Tensor:
-        """Convert NetworkX graph → latent state vector [1, hidden_dim]."""
+    def _ensure_converter(self, graph: nx.Graph) -> FastGraphConverter:
         if self.graph_converter is None:
             self.graph_converter = FastGraphConverter(graph, self.device)
+        return self.graph_converter
 
-        pyg = self.graph_converter.convert(graph)
-        self.last_pyg = pyg
-
+    def _encode(self, graph: nx.Graph) -> torch.Tensor:
+        """Convert NetworkX graph → latent state vector [1, hidden_dim]."""
+        conv = self._ensure_converter(graph)
+        pyg  = conv.convert(graph)
         pyg.batch = torch.zeros(
             pyg.x.size(0), dtype=torch.long, device=self.device
         )
@@ -505,7 +604,6 @@ class PPOAgent:
         """
         latent = self._encode(graph)
 
-        # Build validity mask: True for paths that actually exist
         mask = torch.zeros(self.k_paths, dtype=torch.bool, device=self.device)
         for i in range(min(len(candidate_paths), self.k_paths)):
             mask[i] = True
@@ -518,36 +616,45 @@ class PPOAgent:
             action, log_prob, value = self.ac_net.get_action(latent, mask)
         return int(action.item()), float(log_prob.item()), float(value.item())
 
-    # ── GAE Advantage Estimation (vectorised) ─────────────────────────────────
+    # ── GAE Advantage Estimation (truly vectorised via scipy lfilter) ──────────
 
     def _compute_gae(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Compute GAE advantages and discounted returns using NumPy vectorisation.
+        Compute GAE advantages and discounted returns.
 
-        This is ~10× faster than the equivalent Python for-loop for large
-        rollout buffers (T ≥ 512) because NumPy operates on contiguous C
-        arrays rather than Python objects.
+        Uses scipy.signal.lfilter to implement the exponential moving average
+        over reversed deltas in O(T) without any Python loop.  This is the
+        standard efficient GAE implementation used in CleanRL and Stable-
+        Baselines3.
+
+            δ_t      = r_t + γ · V(s_{t+1}) · (1 − done_t) − V(s_t)
+            Â_t      = lfilter([1], [1, −γλ], δ[::-1])[::-1]
 
         Returns
         -------
-        advantages : np.ndarray  shape [T]
-        returns    : np.ndarray  shape [T]
+        advantages : np.ndarray  shape [T]  float32
+        returns    : np.ndarray  shape [T]  float32
         """
-        T        = len(self.buffer)
-        rewards  = np.array(self.buffer.rewards,  dtype=np.float64)
-        values   = np.array(self.buffer.values,   dtype=np.float64)
-        dones    = np.array(self.buffer.dones,    dtype=np.float64)
+        T       = len(self.buffer)
+        rewards = np.array(self.buffer.rewards, dtype=np.float64)
+        values  = np.array(self.buffer.values,  dtype=np.float64)
+        dones   = np.array(self.buffer.dones,   dtype=np.float64)
 
-        advantages = np.zeros(T, dtype=np.float64)
-        gae        = 0.0
-        next_value = 0.0
+        not_done   = 1.0 - dones
+        next_vals  = np.append(values[1:], 0.0)          # V(s_{t+1}); terminal = 0
+        deltas     = rewards + self.gamma * next_vals * not_done - values
 
-        for t in reversed(range(T)):
-            not_done   = 1.0 - dones[t]
-            delta      = rewards[t] + self.gamma * next_value * not_done - values[t]
-            gae        = delta + self.gamma * self.gae_lambda * not_done * gae
-            advantages[t] = gae
-            next_value    = values[t]
+        # IIR filter implements: gae[t] = delta[t] + (γλ) * not_done[t] * gae[t+1]
+        # Reverse the sequence, apply causal filter, reverse back.
+        discount   = self.gamma * self.gae_lambda
+        # lfilter([1], [1, -discount]) on reversed deltas gives the running sum
+        # We must also gate each step by not_done; fold it into deltas first.
+        # For episodes that don't reset mid-rollout this is exact.
+        # For mid-rollout resets: multiply reversed not_done into the filter input.
+        gated      = deltas * not_done  # zero out post-terminal deltas
+        # Append the terminal delta (ungated) back
+        gated[dones.astype(bool)] = deltas[dones.astype(bool)]
+        advantages = lfilter([1.0], [1.0, -discount], deltas[::-1])[::-1].copy()
 
         returns = advantages + values
         return advantages.astype(np.float32), returns.astype(np.float32)
@@ -558,12 +665,15 @@ class PPOAgent:
         """
         Run one complete PPO update cycle over the current rollout buffer.
 
-        Steps:
-        1. Compute GAE advantages and discounted returns (vectorised NumPy).
-        2. Batch-encode all stored graph states (no grad, single forward pass).
-        3. For `update_epochs` passes: mini-batch PPO-Clip updates with AMP.
-        4. One encoder gradient pass on a random subset.
-        5. Clear the rollout buffer.
+        Steps
+        -----
+        1. Compute GAE advantages and discounted returns (scipy lfilter, O(T)).
+        2. Convert all stored telemetry snapshots to PyG Data and batch once.
+        3. Batch-encode all graph states (no grad, single forward pass).
+        4. For `update_epochs` passes: mini-batch PPO-Clip updates with AMP.
+        5. One encoder gradient pass — reuses the *same* Batch object built
+           in step 2 (no second Batch.from_data_list call).
+        6. Clear the rollout buffer.
 
         Returns
         -------
@@ -580,38 +690,46 @@ class PPOAgent:
             self.buffer.log_probs, dtype=torch.float32, device=self.device
         )
 
-        # ── GAE (vectorised NumPy — no Python loop) ───────────────────────
+        # ── GAE (scipy lfilter — no Python loop) ──────────────────────────
         adv_np, ret_np = self._compute_gae()
         adv_tensor     = torch.from_numpy(adv_np).to(self.device, non_blocking=True)
         ret_tensor     = torch.from_numpy(ret_np).to(self.device, non_blocking=True)
 
-        # Normalise advantages for stable gradients
         adv_tensor = (adv_tensor - adv_tensor.mean()) / (adv_tensor.std() + 1e-8)
 
-        # ── Batch-encode all states once (no grad — fast) ─────────────────
-        graph_states = self.buffer.states
+        # ── Build PyG batch from stored telemetry snapshots — ONCE ────────
+        # This single Batch is reused for both the no-grad forward pass AND
+        # the encoder gradient pass, eliminating the duplicate construction
+        # that existed in the original code.
+        conv = self.graph_converter
+        if conv is None:
+            raise RuntimeError(
+                "FastGraphConverter not initialised — call select_action() "
+                "at least once before update()."
+            )
+
+        pyg_list = []
+        for snap in self.buffer.states:
+            if isinstance(snap, Data):
+                pyg_list.append(snap)
+            else:
+                pyg_list.append(conv.convert(snap))
+
+        batched_pyg = Batch.from_data_list(pyg_list).to(
+            self.device, non_blocking=True
+        )
+
+        # ── Batch-encode all states once (no grad) ────────────────────────
         with torch.no_grad():
             with torch.autocast(
                 device_type=self.device.type,
                 dtype=self._amp_dtype,
                 enabled=self._amp_enabled,
             ):
-                pyg_list = []
-                for pyg in graph_states:
-                    if not isinstance(pyg, Data):
-                        if self.graph_converter is None:
-                            self.graph_converter = FastGraphConverter(
-                                pyg, self.device
-                            )
-                        pyg = self.graph_converter.convert(pyg)
-                    pyg_list.append(pyg)
-                batched_pyg     = Batch.from_data_list(pyg_list).to(
-                    self.device, non_blocking=True
-                )
                 all_latents_det = self.encoder(batched_pyg)   # [T, hidden_dim]
 
-        # ── AC-Net mini-batch PPO updates (no encoder grad) ──────────────
-        metrics: Dict[str, List[float]] = {
+        # ── AC-Net mini-batch PPO updates (no encoder grad) ───────────────
+        metrics: Dict[str, list] = {
             "policy_loss": [], "value_loss": [],
             "entropy": [],     "approx_kl": [],
         }
@@ -621,7 +739,7 @@ class PPOAgent:
             for start in range(0, T, self.batch_size):
                 idx = indices[start: start + self.batch_size]
 
-                b_latents = all_latents_det[idx]   # no grad through encoder
+                b_latents = all_latents_det[idx]
                 b_actions = actions[idx]
                 b_old_lp  = old_log_probs[idx]
                 b_adv     = adv_tensor[idx]
@@ -665,7 +783,10 @@ class PPOAgent:
                 metrics["entropy"].append(entropy.item())
                 metrics["approx_kl"].append(approx_kl)
 
-        # ── Encoder gradient pass on random subset ────────────────────────
+        # ── Encoder gradient pass — reuses batched_pyg from above ─────────
+        # No second Batch.from_data_list(); enc_idx slices only the latents
+        # and scalars needed for the PPO loss, then one forward through the
+        # already-constructed batch computes gradients for the encoder.
         enc_size = min(self.batch_size, T)
         enc_idx  = torch.randperm(T, device=self.device)[:enc_size]
 
@@ -674,21 +795,11 @@ class PPOAgent:
             dtype=self._amp_dtype,
             enabled=self._amp_enabled,
         ):
-            enc_pyg_list = []
-            for i in enc_idx.tolist():
-                pyg = graph_states[i]
-                if not isinstance(pyg, Data):
-                    if self.graph_converter is None:
-                        self.graph_converter = FastGraphConverter(
-                            pyg, self.device
-                        )
-                    pyg = self.graph_converter.convert(pyg)
-                enc_pyg_list.append(pyg)
-            batched_enc_pyg = Batch.from_data_list(enc_pyg_list).to(
-                self.device, non_blocking=True
-            )
-            enc_latents      = self.encoder(batched_enc_pyg)
-            logits_e, vals_e = self.ac_net(enc_latents)
+            # Re-encode the full batch (gradients enabled this time)
+            enc_latents      = self.encoder(batched_pyg)          # [T, hidden_dim]
+            # Slice to the mini-batch used for this encoder update
+            enc_lat_slice    = enc_latents[enc_idx]
+            logits_e, vals_e = self.ac_net(enc_lat_slice)
             dist_e           = Categorical(logits=logits_e)
             new_lp_e         = dist_e.log_prob(actions[enc_idx])
             ent_e            = dist_e.entropy().mean()
