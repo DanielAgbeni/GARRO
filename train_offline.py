@@ -342,5 +342,12 @@ if __name__ == "__main__":
         default=None,
         help="Path to an existing checkpoint to resume training from",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        dest="checkpoint",
+        default=None,
+        help="Alias for --checkpoint to resume training from",
+    )
     args = parser.parse_args()
     main(args)
