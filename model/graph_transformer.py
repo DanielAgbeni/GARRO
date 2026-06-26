@@ -3,14 +3,23 @@ Graph Transformer Encoder with Virtual Star Node — Compile-Safe Edition.
 
 Fixes applied
 -------------
-  ① global_mean_pool called with explicit size= argument, eliminating the
-    int(index.max()) host-sync that caused the torch.compile graph break.
+  ① global_mean_pool / scatter replaced with static view+mean pooling.
+    Every graph from GraphConverter has exactly max_nodes nodes, so we can
+    reshape [B*max_nodes, H] → [B, max_nodes, H] and call .mean(1).
+    This eliminates scatter entirely — no size= arg, no index.max() call,
+    no out-of-bounds CUDA assertion, and no requirement for the caller to
+    pass num_graphs.  ppo_agent.py needs zero changes.
+
   ② GraphConverter caches the static edge skeleton at init; hot-path step()
-    issues a single non-blocking host→device copy of node features only.
-  ③ max_nodes accepted at construction so torch.compile lowers to fixed-size
-    GPU kernels without shape guards on data.batch.
-  ④ AMP dtype: bfloat16 → float16 (T4 native Tensor Cores; no more warnings).
-  ⑤ PPO config: batch_size 64→256, update_every 512→2048.
+    issues a single non-blocking host→device memcpy of node features only.
+
+  ③ max_nodes baked into the encoder at construction time so torch.compile
+    can trace the view+mean as a fixed-shape operation.
+
+  ④ AMP dtype: bfloat16 → float16  (T4 native Tensor Cores; no more
+    "skipping bfloat16 compilation" warnings).
+
+  ⑤ PPO config constants updated: batch_size 64→256, update_every 512→2048.
 """
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Batch, Data
-from torch_geometric.nn import TransformerConv, global_mean_pool
+from torch_geometric.nn import TransformerConv
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -32,10 +41,10 @@ EDGE_FEAT_DIM = 4   # [bw_norm, util, delay_norm, pkt_loss]
 
 _STAR_EDGE_ATTR: List[float] = [1.0, 0.0, 0.0, 0.0]
 
-# ⑤ PPO / training config
-AMP_DTYPE    = torch.float16   # ④ was torch.bfloat16; T4 has no native bf16
-BATCH_SIZE   = 256             # ⑤ was 64
-UPDATE_EVERY = 2048            # ⑤ was 512
+# ④⑤ Training / AMP config
+AMP_DTYPE    = torch.float16   # was torch.bfloat16; T4 has no native bf16
+BATCH_SIZE   = 256             # was 64
+UPDATE_EVERY = 2048            # was 512
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -61,15 +70,17 @@ class GraphTransformerEncoder(nn.Module):
     num_heads  : int   Attention heads per TransformerConv layer (default 4).
     num_layers : int   Stacked TransformerConv layers (default 3).
     dropout    : float Dropout rate inside TransformerConv (default 0.1).
-    max_nodes  : int   ③ Static upper bound on nodes per graph (real + star).
+    max_nodes  : int   ③ Exact node count per graph (real + star).
                        NSFNET = 14 real + 1 star = 15.
+                       Every graph produced by GraphConverter must have this
+                       many nodes — this is what makes the view+mean safe.
 
     Forward
     -------
-    forward(data, num_graphs=1) → Tensor[num_graphs, hidden_dim]
+    forward(data) → Tensor[B, hidden_dim]
 
-    Pass num_graphs explicitly so global_mean_pool receives a compile-time
-    constant size argument and never calls index.max() (fix ①).
+    No num_graphs argument needed.  B is derived from x.shape[0] // max_nodes.
+    The caller (ppo_agent.py) does not need to change.
     """
 
     def __init__(
@@ -78,7 +89,7 @@ class GraphTransformerEncoder(nn.Module):
         num_heads:  int   = 4,
         num_layers: int   = 3,
         dropout:    float = 0.1,
-        max_nodes:  int   = 15,  # ③ NSFNET: 14 real + 1 star
+        max_nodes:  int   = 15,   # ③ NSFNET: 14 real + 1 star
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -110,8 +121,8 @@ class GraphTransformerEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-    def forward(self, data: Data, num_graphs: int = 1) -> torch.Tensor:
-        x = self.node_embed(data.x)
+    def forward(self, data: Data) -> torch.Tensor:
+        x = self.node_embed(data.x)                    # [B*max_nodes, H]
 
         for conv, norm in zip(self.conv_layers, self.layer_norms):
             residual = x
@@ -119,9 +130,13 @@ class GraphTransformerEncoder(nn.Module):
             x = norm(x + residual)
             x = F.relu(x)
 
-        # ① Explicit size= eliminates int(index.max()) and the graph break.
-        latent = global_mean_pool(x, data.batch, size=num_graphs)
-        return self.output_mlp(latent)
+        # ① Static reshape pooling — replaces global_mean_pool / scatter.
+        #   GraphConverter guarantees exactly max_nodes nodes per graph, so
+        #   this view is always valid and contains no dynamic index lookups.
+        #   Works for any batch size B without any caller-side arguments.
+        B = x.shape[0] // self.max_nodes
+        latent = x.view(B, self.max_nodes, self.hidden_dim).mean(dim=1)
+        return self.output_mlp(latent)                 # [B, hidden_dim]
 
 
 # ── GraphConverter ─────────────────────────────────────────────────────────────
@@ -135,7 +150,7 @@ class GraphConverter:
     -----
     converter = GraphConverter(G_topology, device=device)   # once at init
     data      = converter.step(G_live)                      # per env step
-    latent    = encoder(data, num_graphs=1)
+    latent    = encoder(data)
     """
 
     def __init__(
@@ -146,7 +161,7 @@ class GraphConverter:
         self.device  = device
         self.nodes   = sorted(G.nodes())
         self.n_real  = len(self.nodes)
-        self.n_total = self.n_real + 1
+        self.n_total = self.n_real + 1       # must equal encoder's max_nodes
         self._idx    = {n: i for i, n in enumerate(self.nodes)}
 
         # ── Pre-compute static edge_index + edge_attr (runs once) ─────────
@@ -175,7 +190,7 @@ class GraphConverter:
             self.n_total, NODE_FEAT_DIM + 1,
             dtype=torch.float32, device=device,
         )
-        self._x[-1, -1] = 1.0  # star-node flag; permanent
+        self._x[-1, -1] = 1.0          # star-node flag; permanent
 
         self._feat_np = np.empty((self.n_real, NODE_FEAT_DIM), dtype=np.float32)
 
@@ -187,8 +202,8 @@ class GraphConverter:
         ----------
         G     : live NetworkX graph — only node attributes are re-read;
                 topology must match the graph passed to __init__.
-        clone : set False only when Data is consumed immediately and not
-                stored alongside other step() outputs in a replay buffer.
+        clone : set False only when the Data object is consumed immediately
+                and NOT stored alongside other step() outputs.
         """
         feat = self._feat_np
         for i, n in enumerate(self.nodes):
@@ -211,24 +226,27 @@ class GraphConverter:
         )
 
 
-# ── Build helpers ─────────────────────────────────────────────────────────────
+# ── Build helper ──────────────────────────────────────────────────────────────
 
 def build_encoder(device: torch.device) -> GraphTransformerEncoder:
     """
     Construct and compile the encoder for the target device.
 
-    fullgraph=True will raise at startup if any graph break survives,
-    making regressions immediately visible rather than silently degrading.
+    dynamic=True lets a single compiled graph handle both B=1 (rollout) and
+    B=256 (training update) without recompiling between the two call-sites.
+
+    fullgraph=True raises at startup if any graph break survives, keeping
+    regressions immediately visible rather than silently degrading.
     """
     encoder = GraphTransformerEncoder(
         hidden_dim = 128,
         num_heads  = 4,
         num_layers = 3,
         dropout    = 0.1,
-        max_nodes  = 15,
+        max_nodes  = 15,        # NSFNET: 14 real + 1 star
     ).to(device)
 
-    encoder = torch.compile(encoder, fullgraph=True, dynamic=False)
+    encoder = torch.compile(encoder, fullgraph=True, dynamic=True)
     return encoder
 
 
@@ -240,10 +258,10 @@ def rollout_step(
     G_live:    nx.Graph,
     device:    torch.device,
 ) -> torch.Tensor:
-    """Single-graph inference during environment rollout."""
-    data = converter.step(G_live, clone=False)  # consumed immediately
+    """Single-graph inference during environment rollout. No args change needed."""
+    data = converter.step(G_live, clone=False)
     with torch.autocast(device_type="cuda", dtype=AMP_DTYPE):
-        return encoder(data, num_graphs=1)       # ① num_graphs is a compile-time constant
+        return encoder(data)                           # B=1 inferred from shape
 
 
 def ppo_update(
@@ -256,15 +274,14 @@ def ppo_update(
     """
     Batched PPO update.
 
-    data_list : list of Data objects collected from converter.step(..., clone=True).
-    Returns the latent batch for use in downstream actor/critic heads.
+    data_list : list of Data objects from converter.step(..., clone=True).
+    Returns latent batch [B, hidden_dim] for downstream actor/critic heads.
     """
-    batch   = Batch.from_data_list(data_list).to(device)
-    n       = len(data_list)
+    batch = Batch.from_data_list(data_list).to(device)
 
     optimizer.zero_grad(set_to_none=True)
     with torch.autocast(device_type="cuda", dtype=AMP_DTYPE):
-        latent = encoder(batch, num_graphs=n)    # ① n known at call time, not traced dynamically
+        latent = encoder(batch)                        # B inferred from shape
 
     # Caller computes PPO loss, then:
     #   scaler.scale(loss).backward()
@@ -282,7 +299,6 @@ def nx_to_pyg(
     """
     One-shot conversion for backward compatibility.
 
-    For any hot-path code replace with a persistent GraphConverter instance
-    and call converter.step(G) to avoid recomputing the edge skeleton.
+    Replace with a persistent GraphConverter.step() in any hot-path code.
     """
     return GraphConverter(G, device=device).step(G, clone=False)
