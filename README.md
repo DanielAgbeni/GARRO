@@ -315,7 +315,7 @@ python evaluate.py --checkpoint <path_to_checkpoint> --topology <topology_name> 
   - **OSPF (Open Shortest Path First)**: A static shortest-path heuristic choosing the path with the minimum delay (Dijkstra).
   - **ECMP (Equal-Cost Multi-Path)**: Distributes traffic round-robin across the candidate paths without network utilization awareness.
   - **Random**: Randomly selects path options (defines the lower performance bound).
-* **Outputs**: Table saved to `eval_results_<topology>.csv` and comparison bar chart saved to `eval_results_<topology>.png`.
+* **Outputs**: Each evaluation creates its own folder under `evaluation_outputs/`, named with the evaluated checkpoint/model name, topology, episode count, and timestamp. The results are saved as `eval_results_<model>_<topology>_ep<episodes>.csv` and `eval_results_<model>_<topology>_ep<episodes>.png` inside that folder.
 
 ---
 

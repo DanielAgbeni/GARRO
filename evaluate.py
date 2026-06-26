@@ -30,14 +30,18 @@ Usage
 
 Outputs
 -------
-    eval_results_<topology>.png   Bar chart of mean episode rewards
-    eval_results_<topology>.csv   Table of results
+    evaluation_outputs/<model>_<topology>_ep<episodes>_<timestamp>/
+        eval_results_<model>_<topology>_ep<episodes>.png   Bar chart of mean episode rewards
+        eval_results_<model>_<topology>_ep<episodes>.csv   Table of results
 """
 import argparse
 import multiprocessing
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -63,6 +67,37 @@ TOPOLOGY_MAP = {
     "geant2":   get_geant2,
     "fat_tree": lambda: get_fat_tree(k=8),
 }
+
+
+def _safe_path_name(value: str) -> str:
+    """Return a filesystem-friendly name while preserving readability."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    return cleaned.strip("._-") or "model"
+
+
+def _model_name_from_checkpoint(checkpoint: str) -> str:
+    return _safe_path_name(Path(checkpoint).stem)
+
+
+def _make_eval_output_dir(
+    base_dir: str,
+    model_name: str,
+    topology: str,
+    episodes: int,
+) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder_stem = f"{model_name}_{topology}_ep{episodes}_{timestamp}"
+    base_path = Path(base_dir)
+
+    for suffix in ["", *[f"_{i}" for i in range(1, 1000)]]:
+        output_dir = base_path / f"{folder_stem}{suffix}"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=False)
+            return output_dir
+        except FileExistsError:
+            continue
+
+    raise RuntimeError(f"Could not create a unique output directory for {folder_stem}")
 
 
 # ── Baseline runners (top-level so they are picklable for ProcessPoolExecutor) ─
@@ -161,6 +196,14 @@ def main(args):
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
 
+    model_name = _model_name_from_checkpoint(args.checkpoint)
+    output_dir = _make_eval_output_dir(
+        args.output_dir,
+        model_name,
+        args.topology,
+        args.episodes,
+    )
+
     # Auto-detect best device for GARRO inference
     device   = _best_device()
     n_cores  = multiprocessing.cpu_count()
@@ -173,6 +216,8 @@ def main(args):
     print(f"  GARRO Benchmarking — {args.topology.upper()} "
           f"({G.number_of_nodes()} nodes, {G.number_of_edges()} links)")
     print(f"  Episodes per algorithm : {args.episodes}")
+    print(f"  Model evaluated        : {model_name}")
+    print(f"  Output directory       : {output_dir}")
     print(f"  Device (GARRO)         : {device}")
     print(f"  CPU cores              : {n_cores}")
     print(f"  Parallel baselines     : 3 (OSPF + ECMP + Random run simultaneously)")
@@ -281,7 +326,8 @@ def main(args):
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
 
-    chart_path = f"eval_results_{args.topology}.png"
+    output_file_stem = f"eval_results_{model_name}_{args.topology}_ep{args.episodes}"
+    chart_path = output_dir / f"{output_file_stem}.png"
     fig.savefig(chart_path, dpi=150)
     plt.close(fig)
     print(f"[Eval] Bar chart saved → {chart_path}")
@@ -290,7 +336,7 @@ def main(args):
     df = pd.DataFrame(
         {n: results[n] for n in ordered if n in results}
     ).T
-    csv_path = f"eval_results_{args.topology}.csv"
+    csv_path = output_dir / f"{output_file_stem}.csv"
     df.to_csv(csv_path)
     print(f"[Eval] CSV saved       → {csv_path}")
     print("\n[Eval] Done. ✓")
@@ -321,6 +367,11 @@ if __name__ == "__main__":
         type=int,
         default=500,
         help="Number of evaluation episodes per algorithm (default: 500)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="evaluation_outputs",
+        help="Base directory for per-evaluation output folders (default: evaluation_outputs)",
     )
     args = parser.parse_args()
     main(args)
