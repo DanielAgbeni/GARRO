@@ -251,19 +251,34 @@ print("GPU Available:", torch.cuda.is_available())
 print("Active Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
 ```
 
-#### 5. Run Training
-Run the training script using GPU acceleration. Checkpoints will automatically be saved to the `checkpoints/` folder.
+#### 5. Redirect Checkpoints to Google Drive (To prevent data loss)
+To avoid manual copying and guarantee you don't lose checkpoints if Colab crashes or disconnects, symlink the project's checkpoint folder directly to your Google Drive:
 ```bash
-!python train_offline.py --topology nsfnet --episodes 10000
-```
-During training startup, verify the hardware banner logs to confirm that the PPOAgent is executing on the target GPU:
-`Device      : cuda:0  (Tesla T4...)`
+# Create checkpoints folder in Drive
+!mkdir -p "/content/drive/MyDrive/garro_checkpoints"
 
-#### 6. Save Checkpoints to Google Drive
-Ensure your trained weights are safely copied to your mounted Google Drive:
-```bash
-!cp -r checkpoints/ /content/drive/MyDrive/garro_checkpoints/
+# Delete default local directory (if any) and symlink to Google Drive
+!rm -rf /content/schproject/checkpoints
+!ln -s "/content/drive/MyDrive/garro_checkpoints" /content/schproject/checkpoints
 ```
+
+#### 6. Run or Resume Training
+Run the training script using GPU acceleration. Checkpoints will automatically write directly to your Google Drive via the symlink.
+
+* **Start Training from scratch**:
+  ```bash
+  !python train_offline.py --topology nsfnet --episodes 10000
+  ```
+
+* **Resume Training after a disconnect**:
+  If Colab times out or you stop the cell, mount your Drive, recreate the symlink (Steps 2 & 5), look in your Drive folder for the latest saved epoch (e.g. `garro_nsfnet_ep3000.pt`), and run:
+  ```bash
+  !python train_offline.py --topology nsfnet --episodes 10000 --resume checkpoints/garro_nsfnet_ep3000.pt
+  ```
+
+> [!NOTE]
+> **What happens during Resume?** 
+> The agent automatically parses the starting episode index from the filename (e.g., `ep3000` -> resumes from episode 3000). It loads the model weights along with the optimizer and gradient scaler states, allowing training to continue seamlessly with correct learning momentum.
 
 > [!WARNING]
 > **Phase 2 (Live Mininet Emulation) is NOT supported on Google Colab.** Mininet relies on loading custom Linux kernel modules (Open vSwitch) and low-level network namespace sandboxes, which are not allowed inside the lightweight Docker containers used by Google Colab. Emulation must always be run on your local Linux machine or WSL2 setup.
