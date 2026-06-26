@@ -227,7 +227,7 @@ drive.mount('/content/drive')
 Clone your project repository or upload your files to Google Drive, then navigate into the directory:
 ```bash
 # Example if using git:
-!git clone <your-repository-url> schproject
+!git clone https://github.com/DanielAgbeni/GARRO schproject
 %cd schproject
 ```
 
