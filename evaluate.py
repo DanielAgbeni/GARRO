@@ -223,6 +223,7 @@ def main(args):
     agent = PPOAgent(
         config,
         k_paths=config["network"]["k_paths"],
+        num_nodes=G.number_of_nodes(),
         device=device,
         compile_model=False,    # no need to compile for one-shot eval
     )

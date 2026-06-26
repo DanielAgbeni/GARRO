@@ -455,6 +455,7 @@ class PPOAgent:
     ----------
     config        : dict            Full config.yaml contents.
     k_paths       : int             Action-space size (number of candidate paths).
+    num_nodes     : int             Number of real nodes in the topology graph.
     device        : torch.device    Computation device (auto-detected if None).
     compile_model : bool            Enable torch.compile for 15–40% speedup
                                     (default True; disable for debugging).
@@ -464,6 +465,7 @@ class PPOAgent:
         self,
         config:        dict,
         k_paths:       int,
+        num_nodes:     int,
         device:        Optional[torch.device] = None,
         compile_model: bool = True,
     ):
@@ -491,6 +493,7 @@ class PPOAgent:
             num_heads=gt_cfg["num_heads"],
             num_layers=gt_cfg["num_layers"],
             dropout=gt_cfg["dropout"],
+            max_nodes=num_nodes + 1,   # real nodes + 1 star node
         ).to(self.device)
 
         self.ac_net = ActorCriticNetwork(

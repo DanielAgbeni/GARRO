@@ -155,6 +155,7 @@ def main(args):
     agent   = PPOAgent(
         config,
         k_paths=k_paths,
+        num_nodes=G.number_of_nodes(),
         device=device,
         compile_model=compile_model,
     )

@@ -233,8 +233,13 @@ async def main(args):
     print(f"  Checkpoint: {args.checkpoint}")
     print(f"{'='*58}\n")
 
+    # ── Build topology + pre-compute paths ────────────────────────────────
+    G = TOPOLOGY_MAP.get(args.topology, get_nsfnet)()
+    print(f"[Deploy] Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+
     # ── Load pre-trained agent ────────────────────────────────────────────
-    agent = PPOAgent(config, k_paths=k_paths, device=device, compile_model=False)
+    agent = PPOAgent(config, k_paths=k_paths, num_nodes=G.number_of_nodes(),
+                     device=device, compile_model=False)
     try:
         agent.load(args.checkpoint)
         print(f"[Deploy] Checkpoint loaded from {args.checkpoint}")
@@ -244,10 +249,7 @@ async def main(args):
     agent.encoder.eval()
     agent.ac_net.eval()
 
-    # ── Build topology + pre-compute paths ────────────────────────────────
-    G = TOPOLOGY_MAP.get(args.topology, get_nsfnet)()
-    print(f"[Deploy] Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
-
+    # ── Pre-compute K-shortest paths ──────────────────────────────────────
     all_paths = {}
     nodes = list(G.nodes())
     for src in nodes:

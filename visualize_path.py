@@ -131,7 +131,8 @@ def main():
             
             # Load agent
             device = torch.device("cpu")
-            agent = PPOAgent(config, k_paths=config["network"]["k_paths"], device=device)
+            agent = PPOAgent(config, k_paths=config["network"]["k_paths"],
+                             num_nodes=G.number_of_nodes(), device=device)
             agent.load(args.checkpoint)
             agent.encoder.eval()
             agent.ac_net.eval()

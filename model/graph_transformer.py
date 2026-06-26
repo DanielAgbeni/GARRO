@@ -71,6 +71,7 @@ class GraphTransformerEncoder(nn.Module):
     num_layers : int   Stacked TransformerConv layers (default 3).
     dropout    : float Dropout rate inside TransformerConv (default 0.1).
     max_nodes  : int   ③ Exact node count per graph (real + star).
+                        Must be set to num_topology_nodes + 1.
                        NSFNET = 14 real + 1 star = 15.
                        Every graph produced by GraphConverter must have this
                        many nodes — this is what makes the view+mean safe.
@@ -89,7 +90,7 @@ class GraphTransformerEncoder(nn.Module):
         num_heads:  int   = 4,
         num_layers: int   = 3,
         dropout:    float = 0.1,
-        max_nodes:  int   = 15,   # ③ NSFNET: 14 real + 1 star
+        max_nodes:  int,          # ③ num_topology_nodes + 1 (real + star)
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -228,9 +229,15 @@ class GraphConverter:
 
 # ── Build helper ──────────────────────────────────────────────────────────────
 
-def build_encoder(device: torch.device) -> GraphTransformerEncoder:
+def build_encoder(device: torch.device, num_nodes: int) -> GraphTransformerEncoder:
     """
     Construct and compile the encoder for the target device.
+
+    Parameters
+    ----------
+    device    : torch.device  Target compute device.
+    num_nodes : int           Number of real nodes in the topology graph.
+                              The star node is added automatically (+1).
 
     dynamic=True lets a single compiled graph handle both B=1 (rollout) and
     B=256 (training update) without recompiling between the two call-sites.
@@ -243,7 +250,7 @@ def build_encoder(device: torch.device) -> GraphTransformerEncoder:
         num_heads  = 4,
         num_layers = 3,
         dropout    = 0.1,
-        max_nodes  = 15,        # NSFNET: 14 real + 1 star
+        max_nodes  = num_nodes + 1,   # real nodes + 1 star node
     ).to(device)
 
     encoder = torch.compile(encoder, fullgraph=True, dynamic=True)
