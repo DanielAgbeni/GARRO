@@ -86,11 +86,11 @@ class GraphTransformerEncoder(nn.Module):
 
     def __init__(
         self,
+        max_nodes:  int,          # ③ num_topology_nodes + 1 (real + star)
         hidden_dim: int   = 128,
         num_heads:  int   = 4,
         num_layers: int   = 3,
         dropout:    float = 0.1,
-        max_nodes:  int,          # ③ num_topology_nodes + 1 (real + star)
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
