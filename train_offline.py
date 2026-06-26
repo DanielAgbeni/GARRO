@@ -78,6 +78,7 @@ def _print_hardware_banner(
     total_episodes: int,
     batch_size: int,
     update_interval: int,
+    cuda_scaled: bool = False,
 ) -> None:
     """Print a formatted summary of the active hardware configuration."""
     sep = "=" * 64
@@ -95,7 +96,8 @@ def _print_hardware_banner(
     else:
         print("(CPU — torch.compile active)" if compile_model else "(CPU)")
     print(f"  CPU cores   : {n_cores}")
-    print(f"  Batch size  : {batch_size}  (auto-scaled to core count)")
+    scaling = "CUDA auto-scaled" if cuda_scaled else "auto-scaled to core count"
+    print(f"  Batch size  : {batch_size}  ({scaling})")
     print(f"  Update every: {update_interval} steps")
     print(f"  Compile     : {compile_model}")
     print(f"{sep}\n")
@@ -126,25 +128,41 @@ def main(args):
     else:
         compile_model = config.get("training", {}).get("compile_model", True)
 
-    # ── Auto-scale batch size and update interval to CPU count ────────────
-    # Base values from config; scale linearly with core count so larger
-    # machines automatically use bigger rollouts between PPO updates.
+    # ── Auto-scale hyperparameters based on hardware ────────────────────
+    # CUDA GPUs can handle much larger batches and rollouts efficiently.
+    # On CPU/MPS, keep the conservative config.yaml defaults.
     base_batch      = config["ppo"]["batch_size"]
     base_interval   = config["training"].get("update_interval", 512)
+    base_epochs     = config["ppo"]["update_epochs"]
 
-    # Scale factor: 1× on 2 cores, 2× on 4 cores, etc.
-    scale = max(1, n_cores // 2)
-    batch_size      = base_batch * scale        # e.g. 64 → 128 on 4 cores
-    update_interval = base_interval * scale     # e.g. 512 → 1024 on 4 cores
+    cuda_scaled = False
+    if device.type == "cuda":
+        # ── CUDA-optimised overrides ──────────────────────────────────
+        # GPU can process larger mini-batches in a single matmul, and
+        # longer rollouts give stabler GAE advantage estimates.
+        batch_size      = max(base_batch, 256)       # 64 → 256 on CUDA
+        update_interval = max(base_interval, 2048)   # 512 → 2048 on CUDA
+        update_epochs   = max(base_epochs, 15)       # 10 → 15 on CUDA
+        cuda_scaled     = True
+        print(f"[CUDA] Auto-scaled: batch_size={batch_size}, "
+              f"update_interval={update_interval}, "
+              f"update_epochs={update_epochs}")
+    else:
+        # ── CPU / MPS — scale with core count only ────────────────────
+        scale = max(1, n_cores // 2)
+        batch_size      = base_batch * scale
+        update_interval = base_interval * scale
+        update_epochs   = base_epochs
 
-    # Write back so PPOAgent reads the scaled value
-    config["ppo"]["batch_size"] = batch_size
+    # Write back so PPOAgent reads the scaled values
+    config["ppo"]["batch_size"]     = batch_size
+    config["ppo"]["update_epochs"]  = update_epochs
 
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     _print_hardware_banner(
         device, n_cores, compile_model, args.topology,
-        total_episodes, batch_size, update_interval,
+        total_episodes, batch_size, update_interval, cuda_scaled,
     )
 
     # ── Build graph + environment ─────────────────────────────────────────
