@@ -195,12 +195,26 @@ Depending on your goal (quick testing vs. reliable publication-grade results), u
 
 ### ☁️ Running on Google Colab (Recommended for GPU Acceleration)
 
-If you do not have a local GPU, you can train the offline model (Phase 1) on Google Colab to speed up the process using a free NVIDIA T4 GPU.
+If you do not have a local GPU, you can train the offline model (Phase 1) on Google Colab to speed up the process using a free NVIDIA T4 GPU. 
+
+#### 🚀 GPU & System Resource Utilization Highlights
+The codebase is designed to automatically optimize hardware resources in a Google Colab notebook environment:
+*   **Automatic GPU Detection (CUDA)**: The agent (`model/ppo_agent.py`) auto-detects Colab's allocated NVIDIA GPU. Neural network forward/backward passes are fully accelerated on the GPU device.
+*   **Automatic Mixed Precision (AMP)**: Under CUDA, PyTorch's `torch.autocast` is enabled dynamically. The agent queries hardware support: it utilizes `float16` on standard T4 GPU runtimes and automatically upgrades to `bfloat16` (Tensor Cores) if running on premium L4/A100 runtimes. This halves VRAM requirements and maximizes matrix multiplication throughput.
+*   **Non-Blocking H→D Transfers**: A custom `FastGraphConverter` pins CPU memory buffers and streams converted Graph state tensors asynchronously (`non_blocking=True`) to the GPU, overlapping NetworkX-to-PyG conversion with model execution.
+*   **JIT Compilation (`torch.compile`)**: The Graph Attention Transformer and Actor-Critic models are JIT-compiled using PyTorch 2.x's `mode="reduce-overhead"` to optimize the GPU execution graph and fuse kernel operations, boosting overall iteration speeds.
+*   **CPU-Thread Pinning**: While neural network weights reside on the GPU, the analytical finite queue simulation (`digital_twin/mm1k_env.py`) and Poisson-gravity traffic generator (`digital_twin/traffic_generator.py`) run on the CPU. The training initialization pins PyTorch interop/intra-op threads to use all virtual cores allocated by Colab.
+
+---
 
 #### 1. Setup your Colab Notebook
 1. Go to [Google Colab](https://colab.research.google.com).
 2. Change the Runtime Type to use a GPU:
-   * Click **Runtime** > **Change runtime type** > Select **T4 GPU** > Click **Save**.
+   * Click **Runtime** > **Change runtime type** > Select **T4 GPU** (or L4/A100 if available) > Click **Save**.
+3. Verify the GPU assignment by running this in a cell:
+   ```python
+   !nvidia-smi
+   ```
 
 #### 2. Mount Google Drive (To save checkpoints)
 Add this to a notebook cell to mount your Drive so checkpoints aren't lost when your session ends:
@@ -230,11 +244,20 @@ print(f"Installing PyG wheels from: {pyg_url}")
 !pip install gymnasium networkx pyyaml tqdm pandas matplotlib Flask
 ```
 
+Verify that PyTorch successfully binds to the GPU device by executing:
+```python
+import torch
+print("GPU Available:", torch.cuda.is_available())
+print("Active Device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+```
+
 #### 5. Run Training
 Run the training script using GPU acceleration. Checkpoints will automatically be saved to the `checkpoints/` folder.
 ```bash
 !python train_offline.py --topology nsfnet --episodes 10000
 ```
+During training startup, verify the hardware banner logs to confirm that the PPOAgent is executing on the target GPU:
+`Device      : cuda:0  (Tesla T4...)`
 
 #### 6. Save Checkpoints to Google Drive
 Ensure your trained weights are safely copied to your mounted Google Drive:
