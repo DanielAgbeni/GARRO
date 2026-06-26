@@ -170,13 +170,29 @@ def main(args):
     obs, info = env.reset()
 
     ep_idx              = 0
+    if args.checkpoint:
+        if os.path.exists(args.checkpoint):
+            agent.load(args.checkpoint)
+            # Try to parse the episode index from the filename (e.g., garro_nsfnet_ep4000.pt)
+            import re
+            match = re.search(r"_ep(\d+)\.pt$", args.checkpoint)
+            if match:
+                ep_idx = int(match.group(1))
+                print(f"[Init] Resuming training from episode {ep_idx}")
+            else:
+                print(f"[Init] Resuming training with loaded checkpoint weights (starting from episode 0)")
+        else:
+            print(f"[Error] Checkpoint file '{args.checkpoint}' not found!")
+            import sys
+            sys.exit(1)
+
     step_count          = 0
     ep_reward           = 0.0
     episode_rewards:    list = []
     checkpoint_rewards: list = []
     t0                  = time.perf_counter()
 
-    pbar = tqdm(total=total_episodes, desc="Training", unit="ep",
+    pbar = tqdm(total=total_episodes, initial=ep_idx, desc="Training", unit="ep",
                 dynamic_ncols=True)
 
     # ── Main loop ─────────────────────────────────────────────────────────
@@ -319,6 +335,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Disable torch.compile (useful for debugging/profiling)",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to an existing checkpoint to resume training from",
     )
     args = parser.parse_args()
     main(args)

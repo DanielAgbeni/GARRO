@@ -835,18 +835,39 @@ class PPOAgent:
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
 
     def save(self, path: str):
-        """Save encoder + actor-critic weights to a .pt checkpoint."""
+        """Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint."""
         torch.save({
-            "encoder": self.encoder.state_dict(),
-            "ac_net":  self.ac_net.state_dict(),
+            "encoder":     self.encoder.state_dict(),
+            "ac_net":      self.ac_net.state_dict(),
+            "opt_encoder": self.opt_encoder.state_dict(),
+            "opt_ac":      self.opt_ac.state_dict(),
+            "scaler":      self.scaler.state_dict() if hasattr(self, "scaler") and self.scaler else None,
         }, path)
         print(f"[PPO] Checkpoint saved → {path}")
 
     def load(self, path: str):
-        """Load encoder + actor-critic weights from a .pt checkpoint."""
+        """Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint."""
         ckpt = torch.load(path, map_location=self.device)
         self.encoder.load_state_dict(ckpt["encoder"])
         self.ac_net.load_state_dict(ckpt["ac_net"])
+        
+        # Load optimizer and scaler states if they exist in the checkpoint
+        if "opt_encoder" in ckpt:
+            try:
+                self.opt_encoder.load_state_dict(ckpt["opt_encoder"])
+            except Exception as e:
+                print(f"[PPO] Warning: could not load opt_encoder state ({e})")
+        if "opt_ac" in ckpt:
+            try:
+                self.opt_ac.load_state_dict(ckpt["opt_ac"])
+            except Exception as e:
+                print(f"[PPO] Warning: could not load opt_ac state ({e})")
+        if "scaler" in ckpt and ckpt["scaler"] is not None and hasattr(self, "scaler") and self.scaler:
+            try:
+                self.scaler.load_state_dict(ckpt["scaler"])
+            except Exception as e:
+                print(f"[PPO] Warning: could not load scaler state ({e})")
+                
         print(f"[PPO] Checkpoint loaded ← {path}")
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
