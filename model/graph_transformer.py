@@ -246,10 +246,10 @@ def build_encoder(device: torch.device, num_nodes: int) -> GraphTransformerEncod
     regressions immediately visible rather than silently degrading.
     """
     encoder = GraphTransformerEncoder(
-        hidden_dim = 128,
-        num_heads  = 4,
-        num_layers = 3,
-        dropout    = 0.1,
+        hidden_dim = 256,   # increased from 128 for more capacity
+        num_heads  = 8,     # increased from 4; 256/8 = 32 per head
+        num_layers = 4,     # increased from 3; gives 4-hop receptive field
+        dropout    = 0.15,  # slightly increased to regularise larger model
         max_nodes  = num_nodes + 1,   # real nodes + 1 star node
     ).to(device)
 

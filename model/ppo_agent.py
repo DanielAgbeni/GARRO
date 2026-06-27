@@ -63,6 +63,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.signal import lfilter
 from torch.distributions import Categorical
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch_geometric.data import Batch, Data
 
 from model.graph_transformer import GraphTransformerEncoder, nx_to_pyg
@@ -499,7 +500,7 @@ class PPOAgent:
         self.ac_net = ActorCriticNetwork(
             latent_dim=gt_cfg["hidden_dim"],
             k_paths=k_paths,
-            hidden_dim=256,
+            hidden_dim=512,   # scaled from 256 to match larger encoder (hidden_dim=256)
         ).to(self.device)
 
         # ── torch.compile — fixed version gate ────────────────────────────
@@ -556,6 +557,17 @@ class PPOAgent:
         self.entropy_coef  = ppo_cfg["entropy_coef"]
 
         self.buffer = RolloutBuffer()
+
+        # ── LR Schedulers (CosineAnnealingLR) ─────────────────────────────
+        # Decays LR from initial value down to eta_min over offline_episodes.
+        # Falls back gracefully if training config is absent.
+        _t_max = config.get("training", {}).get("offline_episodes", 10000)
+        self.scheduler_encoder = CosineAnnealingLR(
+            self.opt_encoder, T_max=_t_max, eta_min=1e-5
+        )
+        self.scheduler_ac = CosineAnnealingLR(
+            self.opt_ac, T_max=_t_max, eta_min=1e-5
+        )
 
         # Mixed precision scaler (only meaningful for CUDA float16)
         self.scaler = torch.amp.GradScaler(
@@ -830,7 +842,15 @@ class PPOAgent:
         self.scaler.update()
 
         self.buffer.clear()
-        return {k: float(np.mean(v)) for k, v in metrics.items()}
+
+        # ── Step LR schedulers (once per PPO update cycle) ────────────────
+        self.scheduler_encoder.step()
+        self.scheduler_ac.step()
+
+        results = {k: float(np.mean(v)) for k, v in metrics.items()}
+        results["lr_actor"]  = self.opt_encoder.param_groups[0]["lr"]
+        results["lr_critic"] = self.opt_ac.param_groups[1]["lr"]
+        return results
 
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
 

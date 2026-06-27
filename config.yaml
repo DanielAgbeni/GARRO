@@ -9,35 +9,35 @@ mm1k:
   base_service_rate: 150.0        # μ base (packets/sec)
 
 graph_transformer:
-  hidden_dim: 128                 # Latent embedding dimension
-  num_heads: 4                    # Multi-head attention heads
-  num_layers: 3                   # Number of TransformerConv layers
-  dropout: 0.1
+  hidden_dim: 256                 # Latent embedding dimension (increased 128→256 for more capacity)
+  num_heads: 8                    # Multi-head attention heads (increased 4→8; 256/8=32 per head)
+  num_layers: 4                   # Number of TransformerConv layers (increased 3→4; 4-hop receptive field)
+  dropout: 0.15                   # Slightly increased from 0.1 to regularise larger capacity model
 
 ppo:
-  lr_actor: 3.0e-4                # Actor + encoder learning rate
-  lr_critic: 1.0e-3               # Critic head learning rate
+  lr_actor: 1.0e-4                # Actor + encoder LR (reduced 3e-4→1e-4 for fine-grained updates near convergence)
+  lr_critic: 5.0e-4               # Critic head LR (aligned closer to actor; was 1e-3)
   gamma: 0.99                     # Discount factor
-  gae_lambda: 0.95                # GAE λ for advantage estimation
-  clip_epsilon: 0.2               # PPO clipping parameter ε
-  update_epochs: 10               # Number of PPO update epochs per rollout (auto-scaled on CUDA)
-  batch_size: 64                  # Mini-batch size for PPO updates (auto-scaled on CUDA)
-  entropy_coef: 0.01              # Entropy bonus coefficient
+  gae_lambda: 0.98                # GAE λ (increased 0.95→0.98; longer credit assignment for multi-hop routing)
+  clip_epsilon: 0.1               # PPO clipping ε (tightened 0.2→0.1; prevents destructive large policy steps)
+  update_epochs: 5                # PPO update epochs (reduced 10→5 to match tighter clip_epsilon)
+  batch_size: 256                 # Mini-batch size (increased 64→256 for more stable gradient estimates)
+  entropy_coef: 0.03              # Entropy bonus (increased 0.01→0.03; forces exploration from plateau)
 
 training:
   offline_episodes: 50000         # Total training episodes
   max_steps_per_episode: 200      # Steps per episode before reset
   checkpoint_interval: 1000       # Save checkpoint every N episodes
   checkpoint_path: "checkpoints/"
-  update_interval: 512            # Rollout steps collected before each PPO update (auto-scaled on CUDA)
+  update_interval: 1024           # Rollout steps before each PPO update (increased 512→1024 for diverse experience)
   compile_model: true             # torch.compile encoder+AC-net (15–40% speedup; set false to debug)
   num_workers: 0                  # Reserved: parallel env workers (0 = single-process; future feature)
 
 reward_weights:
-  alpha1: 0.4                     # Throughput weight
-  alpha2: 0.3                     # Delay weight
-  alpha3: 0.2                     # Packet loss weight
-  alpha4: 0.1                     # Link utilization variance weight
+  alpha1: 0.35                    # Throughput weight (reduced 0.4→0.35 to give room to delay)
+  alpha2: 0.40                    # Delay weight (increased 0.3→0.4; OSPF wins on delay — target this directly)
+  alpha3: 0.15                    # Packet loss weight (reduced 0.2→0.15; correlated with delay)
+  alpha4: 0.10                    # Link utilization variance weight (unchanged; key differentiator vs OSPF)
 
 controller:
   host: "127.0.0.1"

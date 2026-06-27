@@ -382,7 +382,16 @@ class MM1KNetworkEnv(GymEnv):
         """
         Compute the multi-objective GARRO reward for a selected path.
 
-        R = α1·(T_actual / T_req) − α2·D_norm − α3·L_pkt − α4·σ²_util
+        R = [ α1·(T_actual/T_req) − α2·D_norm − α3·L_pkt − α4·σ²_util
+              − hop_penalty − congestion_penalty ] × 10
+
+        Additions over baseline
+        -----------------------
+        * ×10 scaling     : amplifies the training signal (raw range was ~[-1, +0.5]).
+        * hop_penalty     : 0.02 × (hops − 1) nudges GARRO toward shorter paths,
+                            directly competing with OSPF's shortest-path bias.
+        * congestion_pen  : 0.1 × max(0, max_util_on_path − 0.7) discourages
+                            routing through already-saturated links.
 
         Parameters
         ----------
@@ -390,7 +399,7 @@ class MM1KNetworkEnv(GymEnv):
 
         Returns
         -------
-        float  Scalar reward in approx. range [−1.0, +0.5].
+        float  Scalar reward in approx. range [−15.0, +5.0] (after ×10 scaling).
         """
         if not path or len(path) < 2:
             return -10.0
@@ -400,6 +409,7 @@ class MM1KNetworkEnv(GymEnv):
         total_delay  = 0.0
         total_loss   = 0.0
         min_bw       = float("inf")
+        max_util_on_path = 0.0
 
         for u, v in path_edges:
             edge = self.G.edges.get((u, v)) or self.G.edges.get((v, u))
@@ -409,10 +419,12 @@ class MM1KNetworkEnv(GymEnv):
             P_overflow = edge.get("packet_loss",   0.0)
             delay_ms   = edge.get("queuing_delay", 0.0)
             prop_delay = edge.get("delay",         1.0)
+            util       = edge.get("utilization",   0.0)
 
             total_delay += prop_delay + min(delay_ms, 500.0)
             total_loss   = 1.0 - (1.0 - total_loss) * (1.0 - P_overflow)
             min_bw       = min(min_bw, edge.get("bandwidth", 1_000))
+            max_util_on_path = max(max_util_on_path, util)
 
         # ── Global utilisation variance (uses cached NumPy array) ──────────
         util_variance = float(np.var(self._util_arr)) \
@@ -431,6 +443,15 @@ class MM1KNetworkEnv(GymEnv):
             - self.alpha[2] * total_loss
             - self.alpha[3] * util_variance
         )
+
+        # ── Hop-count penalty: nudge toward shorter paths (like OSPF) ─────
+        hop_penalty = 0.02 * (len(path) - 1)
+
+        # ── Congestion penalty: discourage saturated links ─────────────────
+        congestion_penalty = 0.1 * max(0.0, max_util_on_path - 0.7)
+
+        reward = (reward - hop_penalty - congestion_penalty) * 10.0
+
         return float(reward)
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
