@@ -239,11 +239,14 @@ def build_encoder(device: torch.device, num_nodes: int) -> GraphTransformerEncod
     num_nodes : int           Number of real nodes in the topology graph.
                               The star node is added automatically (+1).
 
-    dynamic=True lets a single compiled graph handle both B=1 (rollout) and
-    B=256 (training update) without recompiling between the two call-sites.
-
-    fullgraph=True raises at startup if any graph break survives, keeping
-    regressions immediately visible rather than silently degrading.
+    Compilation notes (Tesla T4 / CUDA):
+    * mode="default"   — solid JIT speedup without max-autotune Triton search;
+                         avoids the heavy kernel tuning overhead that causes
+                         slowdowns on T4 relative to eager mode.
+    * fullgraph=False  — allows graph breaks without raising at startup;
+                         safer with PyG's TransformerConv dynamic dispatch.
+    * dynamic=True     — single compiled graph handles B=1 (rollout) and
+                         B=256 (training update) without recompiling.
     """
     encoder = GraphTransformerEncoder(
         hidden_dim = 256,   # increased from 128 for more capacity
@@ -253,7 +256,7 @@ def build_encoder(device: torch.device, num_nodes: int) -> GraphTransformerEncod
         max_nodes  = num_nodes + 1,   # real nodes + 1 star node
     ).to(device)
 
-    encoder = torch.compile(encoder, fullgraph=True, dynamic=True)
+    encoder = torch.compile(encoder, mode="default", fullgraph=False, dynamic=True)
     return encoder
 
 
