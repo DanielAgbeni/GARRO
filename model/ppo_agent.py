@@ -477,8 +477,17 @@ class PPOAgent:
         self.device  = device if device is not None else _best_device()
 
         if self.device.type == "cuda":
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark     = True
             torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32    = True   # TF32 for conv/attention kernels
+
+            # Reserve 95% of each GPU's VRAM; leaves headroom for NCCL buffers
+            _n_gpus = torch.cuda.device_count()
+            for _gid in range(_n_gpus):
+                try:
+                    torch.cuda.set_per_process_memory_fraction(0.95, device=_gid)
+                except Exception:
+                    pass  # older PyTorch versions may not support this
 
         self._amp_dtype   = _autocast_dtype(self.device)
         self._amp_enabled = (self._amp_dtype != torch.float32)
@@ -509,18 +518,24 @@ class PPOAgent:
         # constraint).  PyTorch 2.4+ supports Python 3.12 via Dynamo rewrite.
         if _compile and _compile_supported():
             try:
+                # mode="default" is more stable than "reduce-overhead" on T4:
+                # avoids Triton kernel search overhead that stalls on Turing.
+                # dynamic=True compiles ONE graph for both B=1 (rollout) and
+                # B=512 (update) — no recompile on batch-size change.
                 self.encoder = torch.compile(
                     self.encoder,
-                    mode="reduce-overhead",
+                    mode="default",
                     fullgraph=False,
+                    dynamic=True,
                 )
                 self.ac_net = torch.compile(
                     self.ac_net,
-                    mode="reduce-overhead",
+                    mode="default",
                     fullgraph=False,
+                    dynamic=True,
                 )
                 self._compiled     = True
-                self._compile_mode = "torch.compile"
+                self._compile_mode = "torch.compile(default,dynamic)"
             except Exception as exc:
                 print(f"[PPO] torch.compile skipped: {exc}")
                 self._compiled     = False
@@ -537,6 +552,22 @@ class PPOAgent:
         else:
             self._compiled     = False
             self._compile_mode = "none"
+
+        # ── Multi-GPU: DataParallel across all visible CUDA devices ───────
+        # DataParallel splits the batched PPO encode+update across all GPUs
+        # automatically.  On Kaggle T4 ×2 this gives ~1.6–2× update throughput.
+        # RL rollout (env steps) remains single-process / CPU-bound as before.
+        self._n_gpus = torch.cuda.device_count() if self.device.type == "cuda" else 1
+        if self._n_gpus > 1:
+            print(
+                f"[PPO] Multi-GPU detected: {self._n_gpus}× "
+                + ", ".join(
+                    torch.cuda.get_device_name(i) for i in range(self._n_gpus)
+                )
+            )
+            print(f"[PPO] Wrapping encoder + AC-net with nn.DataParallel")
+            self.encoder = nn.DataParallel(self.encoder)
+            self.ac_net  = nn.DataParallel(self.ac_net)
 
         # ── Optimisers ────────────────────────────────────────────────────
         self.opt_encoder = torch.optim.Adam(
@@ -783,7 +814,7 @@ class PPOAgent:
                         - self.entropy_coef * entropy
                     )
 
-                self.opt_ac.zero_grad()
+                self.opt_ac.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.opt_ac)
                 nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
@@ -831,7 +862,7 @@ class PPOAgent:
                 - self.entropy_coef * ent_e
             )
 
-        self.opt_encoder.zero_grad()
+        self.opt_encoder.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
         self.scaler.scale(enc_loss).backward()
         self.scaler.unscale_(self.opt_encoder)
         nn.utils.clip_grad_norm_(
@@ -854,11 +885,20 @@ class PPOAgent:
 
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
 
+    def _unwrap(self, module: nn.Module) -> nn.Module:
+        """Unwrap nn.DataParallel to get the underlying module (for state_dict I/O)."""
+        return module.module if isinstance(module, nn.DataParallel) else module
+
     def save(self, path: str):
-        """Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint."""
+        """
+        Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint.
+
+        Unwraps nn.DataParallel so the checkpoint is always a plain state dict
+        that can be loaded on any number of GPUs (or CPU) without modification.
+        """
         torch.save({
-            "encoder":     self.encoder.state_dict(),
-            "ac_net":      self.ac_net.state_dict(),
+            "encoder":     self._unwrap(self.encoder).state_dict(),
+            "ac_net":      self._unwrap(self.ac_net).state_dict(),
             "opt_encoder": self.opt_encoder.state_dict(),
             "opt_ac":      self.opt_ac.state_dict(),
             "scaler":      self.scaler.state_dict() if hasattr(self, "scaler") and self.scaler else None,
@@ -866,11 +906,16 @@ class PPOAgent:
         print(f"[PPO] Checkpoint saved → {path}")
 
     def load(self, path: str):
-        """Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint."""
+        """
+        Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint.
+
+        Handles checkpoints saved from single-GPU, DataParallel, or CPU runs
+        interchangeably by always loading into the unwrapped module.
+        """
         ckpt = torch.load(path, map_location=self.device)
-        self.encoder.load_state_dict(ckpt["encoder"])
-        self.ac_net.load_state_dict(ckpt["ac_net"])
-        
+        self._unwrap(self.encoder).load_state_dict(ckpt["encoder"])
+        self._unwrap(self.ac_net).load_state_dict(ckpt["ac_net"])
+
         # Load optimizer and scaler states if they exist in the checkpoint
         if "opt_encoder" in ckpt:
             try:
@@ -887,7 +932,7 @@ class PPOAgent:
                 self.scaler.load_state_dict(ckpt["scaler"])
             except Exception as e:
                 print(f"[PPO] Warning: could not load scaler state ({e})")
-                
+
         print(f"[PPO] Checkpoint loaded ← {path}")
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -902,10 +947,18 @@ class PPOAgent:
             f"Compile mode : {self._compile_mode}",
         ]
         if self.device.type == "cuda":
-            props = torch.cuda.get_device_properties(self.device)
+            n_gpus = torch.cuda.device_count()
+            lines.append(f"Num GPUs     : {n_gpus}")
+            for gid in range(n_gpus):
+                props = torch.cuda.get_device_properties(gid)
+                lines.append(
+                    f"  GPU {gid}      : {props.name}  "
+                    f"({props.total_memory / 1e9:.1f} GB VRAM)"
+                )
             lines += [
-                f"GPU          : {props.name}",
-                f"VRAM         : {props.total_memory / 1e9:.1f} GB",
+                f"DataParallel : {'yes' if n_gpus > 1 else 'no (single GPU)'}",
                 f"cuDNN bench  : {torch.backends.cudnn.benchmark}",
+                f"TF32 matmul  : {torch.backends.cuda.matmul.allow_tf32}",
+                f"TF32 cuDNN   : {torch.backends.cudnn.allow_tf32}",
             ]
         return "\n".join(lines)

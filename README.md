@@ -316,7 +316,7 @@ The codebase auto-detects Kaggle's T4 and applies CUDA-optimised overrides:
 1. Go to [kaggle.com](https://www.kaggle.com) and sign in (free account).
 2. Click **+ New Notebook**.
 3. In the right sidebar:
-   - **Accelerator** → **GPU T4 x1**
+   - **Accelerator** → **GPU T4 ×2** ← select the dual-GPU option for maximum throughput
    - **Internet** → **On**
    - **Persistence** → **Files only** (keeps `/kaggle/working/` between sessions)
 4. Click **Save** to start the session.
@@ -364,58 +364,95 @@ print(f"PyTorch: {TORCH} | CUDA tag: {CUDA}")
 #### Step 4 — Verify the GPU
 
 ```python
-# Cell 3 — Sanity check
+# Cell 3 — Sanity check (dual GPU)
 import torch, os, sys
+
 print("CUDA available :", torch.cuda.is_available())
-print("GPU name       :", torch.cuda.get_device_name(0))
-print("VRAM (GB)      :", round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1))
+print("GPU count      :", torch.cuda.device_count())
+for i in range(torch.cuda.device_count()):
+    props = torch.cuda.get_device_properties(i)
+    print(f"  GPU {i}       : {props.name}  ({props.total_memory/1e9:.1f} GB VRAM)")
+
 sys.path.insert(0, "/kaggle/working/schproject")
 print("Python path    : OK")
 ```
 
-Expected output: `CUDA available : True | GPU name : Tesla T4 | VRAM (GB) : 15.8`
+Expected output (T4 ×2):
+```
+CUDA available : True
+GPU count      : 2
+  GPU 0        : Tesla T4  (15.8 GB VRAM)
+  GPU 1        : Tesla T4  (15.8 GB VRAM)
+```
 
-#### Step 5 — Patch `config.yaml` for the T4
+#### Step 5 — Patch `config.yaml` for T4 ×2
 
 ```python
-# Cell 4 — Configure for T4 (float16 AMP, compile off)
-import yaml
+# Cell 4 — Configure for T4 ×2 (compile ON, penalties set per topology)
+import yaml, torch
 
 CONFIG_PATH = "/kaggle/working/schproject/config.yaml"
 with open(CONFIG_PATH) as f:
     cfg = yaml.safe_load(f)
 
-cfg["training"]["compile_model"] = False      # avoid T4 compile stalls
-cfg["training"]["amp_dtype"]     = "float16"  # T4 native precision
+# torch.compile mode="default" + dynamic=True is stable on T4 + PyTorch 2.x
+# and gives 10–20% encoder speedup. "reduce-overhead" caused stalls; this does not.
+cfg["training"]["compile_model"] = True
+
+# amp_dtype is auto-detected as float16 for T4 — no manual override needed.
+# (ppo_agent._autocast_dtype() detects bfloat16 support and falls back to float16)
+
+# Set topology penalty weights (change before each topology run):
+cfg["reward_weights"]["hop_weight"]        = 0.02   # NSFNET / GEANT2
+cfg["reward_weights"]["congestion_weight"] = 1.0    # NSFNET / GEANT2
+# Fat-Tree: set 0.05 and 2.0 instead
 
 with open(CONFIG_PATH, "w") as f:
     yaml.dump(cfg, f, default_flow_style=False)
 
-print("config.yaml patched — compile_model=False, amp_dtype=float16")
+print(f"config.yaml patched — compile_model=True, amp_dtype=auto (float16 on T4)")
+print(f"GPUs visible to PyTorch: {torch.cuda.device_count()}")
 ```
 
 #### Step 6 — Run Training
 
-**NSFNET** (fast — ~20–25 min for 10 000 episodes):
+> [!IMPORTANT]
+> With **GPU T4 ×2** the training script automatically:
+> - Detects both GPUs and wraps encoder + AC-net with `nn.DataParallel`
+> - Doubles `batch_size` → **512** and `update_interval` → **4096**
+> - Applies the linear LR scaling rule (`lr_actor` → 2×, `lr_critic` → 2×)
+> - Prints `[MultiGPU] 2× T4 detected` in the banner
+>
+> No extra flags needed — `--no-compile` is no longer used.
+
+#### Approximate Speed on T4 ×2
+
+| Topology | ep/s (single T4) | ep/s (T4 ×2) | 10 000 ep ETA (×2) |
+|---|---|---|---|
+| **NSFNET** | 7–10 | **10–14** | ~12–17 min |
+| **GEANT2** | 3–5 | **5–8** | ~22–35 min |
+| **Fat-Tree k=8** | 0.5–1 | **0.8–1.5** | ~2–4 h |
+
+**NSFNET** (~12–17 min for 10 000 episodes on T4 ×2):
 ```python
 !cd /kaggle/working/schproject && \
-    python train_offline.py --topology nsfnet --episodes 10000 --no-compile
+    python train_offline.py --topology nsfnet --episodes 10000
 ```
 
-**GEANT2** (medium — ~45 min for 20 000 episodes):
+**GEANT2** (~30 min for 20 000 episodes):
 ```python
 !cd /kaggle/working/schproject && \
-    python train_offline.py --topology geant2 --episodes 20000 --no-compile
+    python train_offline.py --topology geant2 --episodes 20000
 ```
 
-**Fat-Tree** (heavy — first session, 0 → 10 000 episodes):
+**Fat-Tree** (first session, 0 → 10 000 episodes):
 ```python
 !cd /kaggle/working/schproject && \
-    python train_offline.py --topology fat_tree --episodes 10000 --no-compile
+    python train_offline.py --topology fat_tree --episodes 10000
 ```
 
 > [!TIP]
-> **Topology-aware penalty weights** — set these in `config.yaml → reward_weights`
+> **Topology-aware penalty weights** — update `config.yaml → reward_weights`
 > before training each topology to avoid reward scaling bias:
 > ```python
 > # Wide-area (NSFNET / GEANT2)

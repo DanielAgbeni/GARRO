@@ -79,6 +79,7 @@ def _print_hardware_banner(
     batch_size: int,
     update_interval: int,
     cuda_scaled: bool = False,
+    n_gpus: int = 1,
 ) -> None:
     """Print a formatted summary of the active hardware configuration."""
     sep = "=" * 64
@@ -89,14 +90,28 @@ def _print_hardware_banner(
     print(f"{'─'*64}")
     print(f"  Device      : {device}  ", end="")
     if device.type == "cuda":
-        props = torch.cuda.get_device_properties(device)
-        print(f"({props.name}, {props.total_memory/1e9:.1f} GB VRAM)")
+        if n_gpus > 1:
+            gpu_names = ", ".join(
+                f"{torch.cuda.get_device_name(i)} "
+                f"({torch.cuda.get_device_properties(i).total_memory/1e9:.1f} GB)"
+                for i in range(n_gpus)
+            )
+            print(f"({n_gpus}× GPUs: {gpu_names})")
+        else:
+            props = torch.cuda.get_device_properties(device)
+            print(f"({props.name}, {props.total_memory/1e9:.1f} GB VRAM)")
     elif device.type == "mps":
         print("(Apple Metal Performance Shaders)")
     else:
         print("(CPU — torch.compile active)" if compile_model else "(CPU)")
     print(f"  CPU cores   : {n_cores}")
-    scaling = "CUDA auto-scaled" if cuda_scaled else "auto-scaled to core count"
+    if cuda_scaled and n_gpus > 1:
+        scaling = f"CUDA auto-scaled + {n_gpus}× GPU DataParallel"
+    elif cuda_scaled:
+        scaling = "CUDA auto-scaled"
+    else:
+        scaling = "auto-scaled to core count"
+    print(f"  GPU count   : {n_gpus}")
     print(f"  Batch size  : {batch_size}  ({scaling})")
     print(f"  Update every: {update_interval} steps")
     print(f"  Compile     : {compile_model}")
@@ -136,19 +151,45 @@ def main(args):
     base_epochs     = config["ppo"]["update_epochs"]
 
     cuda_scaled = False
+    n_gpus = 1
     if device.type == "cuda":
-        # ── CUDA-optimised overrides ──────────────────────────────────
-        # GPU can process larger mini-batches in a single matmul, and
-        # longer rollouts give stabler GAE advantage estimates.
-        batch_size      = max(base_batch, 256)       # 64 → 256 on CUDA
-        update_interval = max(base_interval, 2048)   # 512 → 2048 on CUDA
-        update_epochs   = max(base_epochs, 15)       # 10 → 15 on CUDA
-        cuda_scaled     = True
-        print(f"[CUDA] Auto-scaled: batch_size={batch_size}, "
-              f"update_interval={update_interval}, "
-              f"update_epochs={update_epochs}")
+        n_gpus = torch.cuda.device_count()
+        # ── CUDA-optimised overrides ──────────────────────────────────────
+        # Base values assume a single T4 (16 GB VRAM).
+        # When multiple GPUs are present, DataParallel splits each update
+        # batch across all GPUs — we can double again to fill them.
+        batch_size      = max(base_batch, 256)        # 64  → 256  (single T4)
+        update_interval = max(base_interval, 2048)    # 512 → 2048 (single T4)
+        update_epochs   = max(base_epochs, 15)        # 10  → 15
+
+        if n_gpus > 1:
+            # Linear batch-size scaling: each GPU processes batch_size // n_gpus
+            # samples; doubling the global size keeps per-GPU load identical.
+            batch_size      *= n_gpus                 # 256 → 512 for T4×2
+            update_interval *= n_gpus                 # 2048 → 4096 for T4×2
+            # Linear LR scaling rule (Goyal et al., 2017):
+            # scale LR proportionally when effective batch size increases.
+            config["ppo"]["lr_actor"]  = min(
+                config["ppo"]["lr_actor"]  * n_gpus, 5e-4
+            )
+            config["ppo"]["lr_critic"] = min(
+                config["ppo"]["lr_critic"] * n_gpus, 2e-3
+            )
+            print(
+                f"[MultiGPU] {n_gpus}× T4 detected — "
+                f"batch_size={batch_size}, update_interval={update_interval}, "
+                f"lr_actor={config['ppo']['lr_actor']:.2e}, "
+                f"lr_critic={config['ppo']['lr_critic']:.2e}"
+            )
+        else:
+            print(
+                f"[CUDA] Auto-scaled: batch_size={batch_size}, "
+                f"update_interval={update_interval}, "
+                f"update_epochs={update_epochs}"
+            )
+        cuda_scaled = True
     else:
-        # ── CPU / MPS — scale with core count only ────────────────────
+        # ── CPU / MPS — scale with core count only ────────────────────────
         scale = max(1, n_cores // 2)
         batch_size      = base_batch * scale
         update_interval = base_interval * scale
@@ -162,7 +203,7 @@ def main(args):
 
     _print_hardware_banner(
         device, n_cores, compile_model, args.topology,
-        total_episodes, batch_size, update_interval, cuda_scaled,
+        total_episodes, batch_size, update_interval, cuda_scaled, n_gpus,
     )
 
     # ── Build graph + environment ─────────────────────────────────────────
