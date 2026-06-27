@@ -553,10 +553,25 @@ class PPOAgent:
             self._compiled     = False
             self._compile_mode = "none"
 
-        # ── Multi-GPU: DataParallel across all visible CUDA devices ───────
-        # DataParallel splits the batched PPO encode+update across all GPUs
-        # automatically.  On Kaggle T4 ×2 this gives ~1.6–2× update throughput.
-        # RL rollout (env steps) remains single-process / CPU-bound as before.
+        # ── Optimisers (built on RAW module — MUST come before DataParallel) ─
+        # DataParallel wraps the forward() call but does NOT expose sub-module
+        # attributes (actor_head, critic_head, shared) on the wrapper itself.
+        # Optimizers must therefore be built first, referencing the plain module.
+        # After wrapping, self.ac_net.parameters() correctly delegates to the
+        # underlying module, so grad updates still flow through both GPUs.
+        self.opt_encoder = torch.optim.Adam(
+            self.encoder.parameters(), lr=ppo_cfg["lr_actor"]
+        )
+        self.opt_ac = torch.optim.Adam([
+            {"params": self.ac_net.actor_head.parameters(),  "lr": ppo_cfg["lr_actor"]},
+            {"params": self.ac_net.critic_head.parameters(), "lr": ppo_cfg["lr_critic"]},
+            {"params": self.ac_net.shared.parameters(),      "lr": ppo_cfg["lr_actor"]},
+        ])
+
+        # ── Multi-GPU: DataParallel (after optimizers — see note above) ────
+        # Wraps encoder + ac_net so every forward() during the PPO update
+        # batch is automatically split across all visible CUDA devices.
+        # On Kaggle T4 ×2: update step runs ~1.6–2× faster.
         self._n_gpus = torch.cuda.device_count() if self.device.type == "cuda" else 1
         if self._n_gpus > 1:
             print(
@@ -569,16 +584,6 @@ class PPOAgent:
             self.encoder = nn.DataParallel(self.encoder)
             self.ac_net  = nn.DataParallel(self.ac_net)
 
-        # ── Optimisers ────────────────────────────────────────────────────
-        self.opt_encoder = torch.optim.Adam(
-            self.encoder.parameters(), lr=ppo_cfg["lr_actor"]
-        )
-        self.opt_ac = torch.optim.Adam([
-            {"params": self.ac_net.actor_head.parameters(),  "lr": ppo_cfg["lr_actor"]},
-            {"params": self.ac_net.critic_head.parameters(), "lr": ppo_cfg["lr_critic"]},
-            {"params": self.ac_net.shared.parameters(),      "lr": ppo_cfg["lr_actor"]},
-        ])
-
         # ── Hyperparameters ───────────────────────────────────────────────
         self.gamma         = ppo_cfg["gamma"]
         self.gae_lambda    = ppo_cfg["gae_lambda"]
@@ -588,6 +593,42 @@ class PPOAgent:
         self.entropy_coef  = ppo_cfg["entropy_coef"]
 
         self.buffer = RolloutBuffer()
+
+        # ── RAM-aware rollout buffer sizing ───────────────────────────────
+        # Each stored state is a lightweight telemetry dict (~1–4 KB).
+        # With 30 GB RAM we can buffer a massive rollout horizon, giving
+        # the GAE estimator a much longer credit-assignment window and
+        # reducing the number of (expensive) PPO gradient update calls.
+        #
+        # Tier table (available system RAM → max update_interval cap):
+        #   ≥ 24 GB  → 32 768  (Kaggle T4 ×2 / Colab Pro+)
+        #   ≥ 12 GB  → 16 384  (Colab standard / high-RAM CPU)
+        #   ≥  6 GB  →  8 192
+        #   <  6 GB  →  4 096  (safe floor)
+        try:
+            import psutil
+            _ram_gb = psutil.virtual_memory().available / 1e9
+        except ImportError:
+            _ram_gb = 0.0
+
+        _cfg_interval = config.get("training", {}).get("update_interval", 4096)
+        if _ram_gb >= 24.0:
+            _ram_cap = 32_768
+        elif _ram_gb >= 12.0:
+            _ram_cap = 16_384
+        elif _ram_gb >= 6.0:
+            _ram_cap = 8_192
+        else:
+            _ram_cap = 4_096
+
+        # Use the larger of the config value and the RAM-tier cap
+        self._update_interval = max(_cfg_interval, _ram_cap)
+        if self._update_interval != _cfg_interval:
+            print(
+                f"[PPO] RAM-aware rollout scaling: {_ram_gb:.1f} GB available → "
+                f"update_interval {_cfg_interval} → {self._update_interval} "
+                f"(longer GAE horizon, fewer updates per episode)"
+            )
 
         # ── LR Schedulers (CosineAnnealingLR) ─────────────────────────────
         # Decays LR from initial value down to eta_min over offline_episodes.

@@ -309,7 +309,9 @@ def main(args):
                 agent.save(ckpt_path)
 
         # 5. PPO update every `update_interval` environment steps
-        if step_count % update_interval == 0 and len(agent.buffer) > 0:
+        # Uses agent._update_interval which is RAM-aware (scales up to 32768
+        # on Kaggle's 30 GB RAM for a longer, richer GAE horizon).
+        if step_count % agent._update_interval == 0 and len(agent.buffer) > 0:
             metrics = agent.update()
             if metrics:
                 pbar.write(
