@@ -196,6 +196,9 @@ def main(args):
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
 
+    if args.arrival_rate is not None:
+        config["mm1k"]["base_arrival_rate"] = args.arrival_rate
+
     model_name = _model_name_from_checkpoint(args.checkpoint)
     output_dir = _make_eval_output_dir(
         args.output_dir,
@@ -216,6 +219,7 @@ def main(args):
     print(f"  GARRO Benchmarking — {args.topology.upper()} "
           f"({G.number_of_nodes()} nodes, {G.number_of_edges()} links)")
     print(f"  Episodes per algorithm : {args.episodes}")
+    print(f"  Base Arrival Rate (λ)  : {config['mm1k']['base_arrival_rate']} (Service Rate μ: {config['mm1k']['base_service_rate']})")
     print(f"  Model evaluated        : {model_name}")
     print(f"  Output directory       : {output_dir}")
     print(f"  Device (GARRO)         : {device}")
@@ -372,6 +376,12 @@ if __name__ == "__main__":
         "--output-dir",
         default="evaluation_outputs",
         help="Base directory for per-evaluation output folders (default: evaluation_outputs)",
+    )
+    parser.add_argument(
+        "--arrival-rate",
+        type=float,
+        default=None,
+        help="Override base arrival rate λ in packets/sec (default: from config.yaml)",
     )
     args = parser.parse_args()
     main(args)
