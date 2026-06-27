@@ -794,18 +794,22 @@ class PPOAgent:
             else:
                 pyg_list.append(conv.convert(snap))
 
-        batched_pyg = Batch.from_data_list(pyg_list).to(
-            self.device, non_blocking=True
-        )
-
-        # ── Batch-encode all states once (no grad) ────────────────────────
+        # ── Batch-encode all states in chunked passes (no grad) ────────────
+        # Chunking prevents VRAM allocation spikes when T is large (e.g. 32,768).
+        all_latents_list = []
+        chunk_sz = max(self.batch_size * 4, 2048)
         with torch.no_grad():
             with torch.autocast(
                 device_type=self.device.type,
                 dtype=self._amp_dtype,
                 enabled=self._amp_enabled,
             ):
-                all_latents_det = self.encoder(batched_pyg)   # [T, hidden_dim]
+                for i in range(0, T, chunk_sz):
+                    c_batch = Batch.from_data_list(pyg_list[i : i + chunk_sz]).to(
+                        self.device, non_blocking=True
+                    )
+                    all_latents_list.append(self.encoder(c_batch))
+        all_latents_det = torch.cat(all_latents_list, dim=0)   # [T, hidden_dim]
 
         # ── AC-Net mini-batch PPO updates (no encoder grad) ───────────────
         metrics: Dict[str, list] = {
@@ -862,22 +866,23 @@ class PPOAgent:
                 metrics["entropy"].append(entropy.item())
                 metrics["approx_kl"].append(approx_kl)
 
-        # ── Encoder gradient pass — reuses batched_pyg from above ─────────
-        # No second Batch.from_data_list(); enc_idx slices only the latents
-        # and scalars needed for the PPO loss, then one forward through the
-        # already-constructed batch computes gradients for the encoder.
+        # ── Encoder gradient pass — mini-batch graph encoding ──────────────
+        # Encodes ONLY a mini-batch of size enc_size (512 graphs) with gradients
+        # enabled, preventing CUDA Out-Of-Memory errors on large rollout buffers.
         enc_size = min(self.batch_size, T)
         enc_idx  = torch.randperm(T, device=self.device)[:enc_size]
+        enc_idx_cpu = enc_idx.cpu().tolist()
+
+        enc_pyg = Batch.from_data_list([pyg_list[i] for i in enc_idx_cpu]).to(
+            self.device, non_blocking=True
+        )
 
         with torch.autocast(
             device_type=self.device.type,
             dtype=self._amp_dtype,
             enabled=self._amp_enabled,
         ):
-            # Re-encode the full batch (gradients enabled this time)
-            enc_latents      = self.encoder(batched_pyg)          # [T, hidden_dim]
-            # Slice to the mini-batch used for this encoder update
-            enc_lat_slice    = enc_latents[enc_idx]
+            enc_lat_slice    = self.encoder(enc_pyg)              # [enc_size, hidden_dim]
             logits_e, vals_e = self.ac_net(enc_lat_slice)
             dist_e           = Categorical(logits=logits_e)
             new_lp_e         = dist_e.log_prob(actions[enc_idx])
