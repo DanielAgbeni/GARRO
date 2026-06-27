@@ -38,6 +38,12 @@ reward_weights:
   alpha2: 0.40                    # Delay weight (increased 0.3→0.4; OSPF wins on delay — target this directly)
   alpha3: 0.15                    # Packet loss weight (reduced 0.2→0.15; correlated with delay)
   alpha4: 0.10                    # Link utilization variance weight (unchanged; key differentiator vs OSPF)
+  # ── Topology-aware routing penalty multipliers ───────────────────────────
+  # Applied OUTSIDE the ×10 QoS scalar to prevent over-amplification.
+  # Wide-area (NSFNET / GEANT2): soft penalties encourage path diversity.
+  # Data-centre (Fat-Tree): larger values counteract ECMP sprawl / congestion.
+  hop_weight: 0.02                # Cost per hop (NSFNET/GEANT2≈0.02, Fat-Tree≈0.05)
+  congestion_weight: 1.0          # Cost per util unit above 0.7 (NSFNET/GEANT2≈1.0, Fat-Tree≈2.0)
 
 controller:
   host: "127.0.0.1"

@@ -169,6 +169,20 @@ class MM1KNetworkEnv(GymEnv):
             config["reward_weights"]["alpha4"],
         ]
 
+        # ── Topology-aware penalty multipliers (safe fallbacks) ───────────
+        # Override in config.yaml under reward_weights:
+        #   hop_weight        – cost per hop beyond source; wide-area nets
+        #                       (NSFNET/GEANT2) need a soft value (~0.02);
+        #                       data-centre fabrics (Fat-Tree) can use a
+        #                       larger value (~0.05) to counter ECMP sprawl.
+        #   congestion_weight – cost per unit of util exceeding 0.7; Fat-Tree
+        #                       warrants a higher barrier (~2.0) given its
+        #                       equal-cost multipath topology, whereas wide-
+        #                       area nets use a softer barrier (~1.0).
+        _rw = config.get("reward_weights", {})
+        self.hop_weight         = _rw.get("hop_weight",         0.02)
+        self.congestion_weight  = _rw.get("congestion_weight",  1.0)
+
         self.num_nodes  = self.G.number_of_nodes()
         self.num_edges  = self.G.number_of_edges()
         self.edges_list: List[Tuple] = list(self.G.edges())
@@ -382,16 +396,26 @@ class MM1KNetworkEnv(GymEnv):
         """
         Compute the multi-objective GARRO reward for a selected path.
 
-        R = [ α1·(T_actual/T_req) − α2·D_norm − α3·L_pkt − α4·σ²_util
-              − hop_penalty − congestion_penalty ] × 10
+        Formula
+        -------
+        base_qos_reward = α1·(T_actual/T_req) − α2·D_norm
+                        − α3·L_pkt − α4·σ²_util
 
-        Additions over baseline
-        -----------------------
-        * ×10 scaling     : amplifies the training signal (raw range was ~[-1, +0.5]).
-        * hop_penalty     : 0.02 × (hops − 1) nudges GARRO toward shorter paths,
-                            directly competing with OSPF's shortest-path bias.
-        * congestion_pen  : 0.1 × max(0, max_util_on_path − 0.7) discourages
-                            routing through already-saturated links.
+        hop_penalty        = hop_weight        × (hops − 1)
+        congestion_penalty = congestion_weight × max(0, max_util_on_path − 0.7)
+
+        final_reward = (base_qos_reward × 10.0) − hop_penalty − congestion_penalty
+
+        Design rationale
+        ----------------
+        * The ×10 terminal scalar amplifies *only* the base QoS signal
+          (raw range ≈ [−1.0, +0.5]) to a training-friendly range;
+          it is NOT applied to the routing penalties.
+        * hop_weight / congestion_weight are loaded from config so each
+          topology (NSFNET, GEANT2, Fat-Tree) can tune them independently
+          without structural changes to the environment:
+            – Wide-area (NSFNET/GEANT2): hop_weight ≈ 0.02, cong_weight ≈ 1.0
+            – Data-centre (Fat-Tree)   : hop_weight ≈ 0.05, cong_weight ≈ 2.0
 
         Parameters
         ----------
@@ -399,16 +423,16 @@ class MM1KNetworkEnv(GymEnv):
 
         Returns
         -------
-        float  Scalar reward in approx. range [−15.0, +5.0] (after ×10 scaling).
+        float  Scalar reward in approx. range [−15.0, +5.0].
         """
         if not path or len(path) < 2:
             return -10.0
 
         path_edges = list(zip(path[:-1], path[1:]))
 
-        total_delay  = 0.0
-        total_loss   = 0.0
-        min_bw       = float("inf")
+        total_delay      = 0.0
+        total_loss       = 0.0
+        min_bw           = float("inf")
         max_util_on_path = 0.0
 
         for u, v in path_edges:
@@ -421,10 +445,10 @@ class MM1KNetworkEnv(GymEnv):
             prop_delay = edge.get("delay",         1.0)
             util       = edge.get("utilization",   0.0)
 
-            total_delay += prop_delay + min(delay_ms, 500.0)
-            total_loss   = 1.0 - (1.0 - total_loss) * (1.0 - P_overflow)
-            min_bw       = min(min_bw, edge.get("bandwidth", 1_000))
-            max_util_on_path = max(max_util_on_path, util)
+            total_delay      += prop_delay + min(delay_ms, 500.0)
+            total_loss        = 1.0 - (1.0 - total_loss) * (1.0 - P_overflow)
+            min_bw            = min(min_bw, edge.get("bandwidth", 1_000))
+            max_util_on_path  = max(max_util_on_path, util)
 
         # ── Global utilisation variance (uses cached NumPy array) ──────────
         util_variance = float(np.var(self._util_arr)) \
@@ -437,22 +461,24 @@ class MM1KNetworkEnv(GymEnv):
         # ── Normalise delay ────────────────────────────────────────────────
         delay_norm = min(total_delay / 500.0, 1.0)
 
-        reward = (
+        # ── Base multi-objective QoS reward ───────────────────────────────
+        base_qos_reward = (
               self.alpha[0] * tput_ratio
             - self.alpha[1] * delay_norm
             - self.alpha[2] * total_loss
             - self.alpha[3] * util_variance
         )
 
-        # ── Hop-count penalty: nudge toward shorter paths (like OSPF) ─────
-        hop_penalty = 0.02 * (len(path) - 1)
+        # ── Topology-adapted routing penalties (outside the ×10 scalar) ───
+        # hop_weight / congestion_weight are set in __init__ from config so
+        # each topology can be tuned without touching this method.
+        hop_penalty        = self.hop_weight        * (len(path) - 1)
+        congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
 
-        # ── Congestion penalty: discourage saturated links ─────────────────
-        congestion_penalty = 0.1 * max(0.0, max_util_on_path - 0.7)
+        # ── Final reward: QoS signal scaled, penalties applied outside ────
+        final_reward = (base_qos_reward * 10.0) - hop_penalty - congestion_penalty
 
-        reward = (reward - hop_penalty - congestion_penalty) * 10.0
-
-        return float(reward)
+        return float(final_reward)
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
 

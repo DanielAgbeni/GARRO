@@ -285,7 +285,210 @@ Run the training script using GPU acceleration. Checkpoints will automatically w
 
 ---
 
-### Training Outputs
+### 🟠 Running on Kaggle (Free T4 GPU — No Account Upgrade Required)
+
+Kaggle provides a **free NVIDIA Tesla T4 GPU (16 GB VRAM)** with 29 GB RAM and up to **12 hours per session** — a strong alternative to Google Colab for longer runs (GEANT2 / Fat-Tree). No credit card is required.
+
+> [!IMPORTANT]
+> Kaggle sessions auto-shutdown after **12 hours**. For Fat-Tree (50 000 ep) you must save
+> a checkpoint and resume in a new session using `--checkpoint`. Always download your `.pt`
+> file before the session ends — use the **Output** tab in the Kaggle sidebar.
+
+#### GPU & System Resource Utilization Highlights
+The codebase auto-detects Kaggle's T4 and applies CUDA-optimised overrides:
+- **CUDA Auto-scaling**: `batch_size → 256`, `update_interval → 2048`, `update_epochs → 15` (no config edit required).
+- **AMP `float16`**: The T4 has no native `bfloat16` hardware support. Set `amp_dtype: float16` in `config.yaml` for optimal throughput.
+- **Non-blocking H→D Transfers**: Graph state tensors are streamed asynchronously to the GPU, overlapping CPU simulation with GPU inference.
+- **`torch.compile` off by default**: Disabled on Kaggle T4 to avoid stall-on-compile warnings; you still get full CUDA speedups via the scaled batch/rollout sizes.
+
+#### Approximate T4 Speed Benchmarks
+
+| Topology | Nodes | ep/s (T4) | 10 000 ep ETA |
+|---|---|---|---|
+| **NSFNET** | 14 | 7–10 | ~20–25 min |
+| **GEANT2** | 24 | 3–5 | ~35–55 min |
+| **Fat-Tree k=8** | 80 | 0.5–1 | ~3–6 h |
+
+---
+
+#### Step 1 — Create a Kaggle Notebook with GPU
+
+1. Go to [kaggle.com](https://www.kaggle.com) and sign in (free account).
+2. Click **+ New Notebook**.
+3. In the right sidebar:
+   - **Accelerator** → **GPU T4 x1**
+   - **Internet** → **On**
+   - **Persistence** → **Files only** (keeps `/kaggle/working/` between sessions)
+4. Click **Save** to start the session.
+
+#### Step 2 — Clone the Repository
+
+```python
+# Cell 1
+!git clone https://github.com/DanielAgbeni/GARRO.git /kaggle/working/schproject
+%cd /kaggle/working/schproject
+!ls -la
+```
+
+> If the repo is private, use a Personal Access Token:
+> ```python
+> !git clone https://YOUR_TOKEN@github.com/DanielAgbeni/GARRO.git /kaggle/working/schproject
+> ```
+
+#### Step 3 — Install Dependencies
+
+Kaggle already ships PyTorch + CUDA. Only install the missing packages:
+
+```python
+# Cell 2 — Install project packages and matching PyG CUDA wheels
+!pip install -q \
+    torch-geometric==2.5.3 \
+    gymnasium==1.2.2 \
+    networkx==3.6.1 \
+    numpy==2.4.4 \
+    matplotlib==3.11.0 \
+    pyyaml==6.0.3 \
+    tqdm==4.68.3 \
+    psutil==7.2.2
+
+import torch
+TORCH = torch.__version__.split("+")[0]          # e.g. "2.3.1"
+CUDA  = "cu" + torch.version.cuda.replace(".", "")  # e.g. "cu121"
+print(f"PyTorch: {TORCH} | CUDA tag: {CUDA}")
+
+!pip install -q \
+    torch-scatter -f https://data.pyg.org/whl/torch-{TORCH}+{CUDA}.html \
+    torch-sparse  -f https://data.pyg.org/whl/torch-{TORCH}+{CUDA}.html
+```
+
+#### Step 4 — Verify the GPU
+
+```python
+# Cell 3 — Sanity check
+import torch, os, sys
+print("CUDA available :", torch.cuda.is_available())
+print("GPU name       :", torch.cuda.get_device_name(0))
+print("VRAM (GB)      :", round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1))
+sys.path.insert(0, "/kaggle/working/schproject")
+print("Python path    : OK")
+```
+
+Expected output: `CUDA available : True | GPU name : Tesla T4 | VRAM (GB) : 15.8`
+
+#### Step 5 — Patch `config.yaml` for the T4
+
+```python
+# Cell 4 — Configure for T4 (float16 AMP, compile off)
+import yaml
+
+CONFIG_PATH = "/kaggle/working/schproject/config.yaml"
+with open(CONFIG_PATH) as f:
+    cfg = yaml.safe_load(f)
+
+cfg["training"]["compile_model"] = False      # avoid T4 compile stalls
+cfg["training"]["amp_dtype"]     = "float16"  # T4 native precision
+
+with open(CONFIG_PATH, "w") as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+
+print("config.yaml patched — compile_model=False, amp_dtype=float16")
+```
+
+#### Step 6 — Run Training
+
+**NSFNET** (fast — ~20–25 min for 10 000 episodes):
+```python
+!cd /kaggle/working/schproject && \
+    python train_offline.py --topology nsfnet --episodes 10000 --no-compile
+```
+
+**GEANT2** (medium — ~45 min for 20 000 episodes):
+```python
+!cd /kaggle/working/schproject && \
+    python train_offline.py --topology geant2 --episodes 20000 --no-compile
+```
+
+**Fat-Tree** (heavy — first session, 0 → 10 000 episodes):
+```python
+!cd /kaggle/working/schproject && \
+    python train_offline.py --topology fat_tree --episodes 10000 --no-compile
+```
+
+> [!TIP]
+> **Topology-aware penalty weights** — set these in `config.yaml → reward_weights`
+> before training each topology to avoid reward scaling bias:
+> ```python
+> # Wide-area (NSFNET / GEANT2)
+> cfg["reward_weights"]["hop_weight"]        = 0.02
+> cfg["reward_weights"]["congestion_weight"] = 1.0
+>
+> # Data-centre (Fat-Tree)
+> cfg["reward_weights"]["hop_weight"]        = 0.05
+> cfg["reward_weights"]["congestion_weight"] = 2.0
+> ```
+
+#### Step 7 — Download Checkpoints Before Session Ends
+
+```python
+# Cell 6 — List all outputs
+import os, glob
+
+for f in sorted(glob.glob("/kaggle/working/schproject/checkpoints/*")):
+    size = os.path.getsize(f) / 1e6
+    print(f"{os.path.basename(f):50s}  {size:.1f} MB")
+```
+
+Then click **Output** in the Kaggle sidebar → download `garro_<topology>_final.pt`
+and `training_curve_<topology>.png`.
+
+> [!CAUTION]
+> The session disk is wiped on shutdown if Persistence is **off**. Always download
+> your checkpoint, or copy it to a Kaggle Dataset for permanent cloud storage.
+
+#### Step 8 — Resume Training in a New Session (Multi-Session Fat-Tree)
+
+Upload your saved `.pt` file as a Kaggle Dataset or re-upload it to the notebook input, then:
+
+```python
+# Cell 7 — Resume Fat-Tree from episode 10 000
+CHECKPOINT = "/kaggle/working/schproject/checkpoints/garro_fat_tree_ep10000.pt"
+
+!cd /kaggle/working/schproject && \
+    python train_offline.py \
+        --topology fat_tree \
+        --episodes 20000 \
+        --checkpoint {CHECKPOINT} \
+        --no-compile
+```
+
+The script parses the episode index from the filename and resumes the progress bar automatically.
+
+#### Step 9 — Evaluate the Trained Model
+
+```python
+# Cell 8 — Evaluate GARRO vs OSPF / ECMP / Random
+CHECKPOINT = "/kaggle/working/schproject/checkpoints/garro_nsfnet_final.pt"
+
+!cd /kaggle/working/schproject && \
+    python evaluate.py \
+        --checkpoint {CHECKPOINT} \
+        --topology nsfnet \
+        --episodes 500 \
+        --output-dir evaluation_outputs
+```
+
+Results are saved under `evaluation_outputs/<run_id>/` as a `.csv` metrics table
+and a `.png` comparison bar chart.
+
+> [!WARNING]
+> **Phase 2 (Live Mininet Emulation) is NOT supported on Kaggle.** Mininet requires
+> loading custom Linux kernel modules (Open vSwitch) and network namespaces that are
+> blocked in Kaggle's container environment. Phase 2 must be run on a local Linux
+> machine or WSL2 setup.
+
+---
+
+
 * **Checkpoints**: Periodic model weights are saved to `checkpoints/garro_<topology>_ep<N>.pt`.
 * **Final Model**: The converged weights are saved to `checkpoints/garro_<topology>_final.pt`.
 * **Training Curve**: A plot of episodic rewards over time is saved to `checkpoints/training_curve_<topology>.png`.
