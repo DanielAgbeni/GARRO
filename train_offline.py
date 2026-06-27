@@ -90,27 +90,14 @@ def _print_hardware_banner(
     print(f"{'─'*64}")
     print(f"  Device      : {device}  ", end="")
     if device.type == "cuda":
-        if n_gpus > 1:
-            gpu_names = ", ".join(
-                f"{torch.cuda.get_device_name(i)} "
-                f"({torch.cuda.get_device_properties(i).total_memory/1e9:.1f} GB)"
-                for i in range(n_gpus)
-            )
-            print(f"({n_gpus}× GPUs: {gpu_names})")
-        else:
-            props = torch.cuda.get_device_properties(device)
-            print(f"({props.name}, {props.total_memory/1e9:.1f} GB VRAM)")
+        props = torch.cuda.get_device_properties(device)
+        print(f"({props.name}, {props.total_memory/1e9:.1f} GB VRAM)")
     elif device.type == "mps":
         print("(Apple Metal Performance Shaders)")
     else:
         print("(CPU — torch.compile active)" if compile_model else "(CPU)")
     print(f"  CPU cores   : {n_cores}")
-    if cuda_scaled and n_gpus > 1:
-        scaling = f"CUDA auto-scaled + {n_gpus}× GPU DataParallel"
-    elif cuda_scaled:
-        scaling = "CUDA auto-scaled"
-    else:
-        scaling = "auto-scaled to core count"
+    scaling = "CUDA auto-scaled (high-throughput)" if cuda_scaled else "auto-scaled to core count"
     print(f"  GPU count   : {n_gpus}")
     print(f"  Batch size  : {batch_size}  ({scaling})")
     print(f"  Update every: {update_interval} steps")

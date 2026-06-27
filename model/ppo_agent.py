@@ -553,12 +553,7 @@ class PPOAgent:
             self._compiled     = False
             self._compile_mode = "none"
 
-        # ── Optimisers (built on RAW module — MUST come before DataParallel) ─
-        # DataParallel wraps the forward() call but does NOT expose sub-module
-        # attributes (actor_head, critic_head, shared) on the wrapper itself.
-        # Optimizers must therefore be built first, referencing the plain module.
-        # After wrapping, self.ac_net.parameters() correctly delegates to the
-        # underlying module, so grad updates still flow through both GPUs.
+        # ── Optimisers ────────────────────────────────────────────────────
         self.opt_encoder = torch.optim.Adam(
             self.encoder.parameters(), lr=ppo_cfg["lr_actor"]
         )
@@ -567,22 +562,6 @@ class PPOAgent:
             {"params": self.ac_net.critic_head.parameters(), "lr": ppo_cfg["lr_critic"]},
             {"params": self.ac_net.shared.parameters(),      "lr": ppo_cfg["lr_actor"]},
         ])
-
-        # ── Multi-GPU: DataParallel (after optimizers — see note above) ────
-        # Wraps encoder + ac_net so every forward() during the PPO update
-        # batch is automatically split across all visible CUDA devices.
-        # On Kaggle T4 ×2: update step runs ~1.6–2× faster.
-        self._n_gpus = torch.cuda.device_count() if self.device.type == "cuda" else 1
-        if self._n_gpus > 1:
-            print(
-                f"[PPO] Multi-GPU detected: {self._n_gpus}× "
-                + ", ".join(
-                    torch.cuda.get_device_name(i) for i in range(self._n_gpus)
-                )
-            )
-            print(f"[PPO] Wrapping encoder + AC-net with nn.DataParallel")
-            self.encoder = nn.DataParallel(self.encoder)
-            self.ac_net  = nn.DataParallel(self.ac_net)
 
         # ── Hyperparameters ───────────────────────────────────────────────
         self.gamma         = ppo_cfg["gamma"]
@@ -926,20 +905,11 @@ class PPOAgent:
 
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
 
-    def _unwrap(self, module: nn.Module) -> nn.Module:
-        """Unwrap nn.DataParallel to get the underlying module (for state_dict I/O)."""
-        return module.module if isinstance(module, nn.DataParallel) else module
-
     def save(self, path: str):
-        """
-        Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint.
-
-        Unwraps nn.DataParallel so the checkpoint is always a plain state dict
-        that can be loaded on any number of GPUs (or CPU) without modification.
-        """
+        """Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint."""
         torch.save({
-            "encoder":     self._unwrap(self.encoder).state_dict(),
-            "ac_net":      self._unwrap(self.ac_net).state_dict(),
+            "encoder":     self.encoder.state_dict(),
+            "ac_net":      self.ac_net.state_dict(),
             "opt_encoder": self.opt_encoder.state_dict(),
             "opt_ac":      self.opt_ac.state_dict(),
             "scaler":      self.scaler.state_dict() if hasattr(self, "scaler") and self.scaler else None,
@@ -947,15 +917,10 @@ class PPOAgent:
         print(f"[PPO] Checkpoint saved → {path}")
 
     def load(self, path: str):
-        """
-        Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint.
-
-        Handles checkpoints saved from single-GPU, DataParallel, or CPU runs
-        interchangeably by always loading into the unwrapped module.
-        """
+        """Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint."""
         ckpt = torch.load(path, map_location=self.device)
-        self._unwrap(self.encoder).load_state_dict(ckpt["encoder"])
-        self._unwrap(self.ac_net).load_state_dict(ckpt["ac_net"])
+        self.encoder.load_state_dict(ckpt["encoder"])
+        self.ac_net.load_state_dict(ckpt["ac_net"])
 
         # Load optimizer and scaler states if they exist in the checkpoint
         if "opt_encoder" in ckpt:
@@ -988,16 +953,9 @@ class PPOAgent:
             f"Compile mode : {self._compile_mode}",
         ]
         if self.device.type == "cuda":
-            n_gpus = torch.cuda.device_count()
-            lines.append(f"Num GPUs     : {n_gpus}")
-            for gid in range(n_gpus):
-                props = torch.cuda.get_device_properties(gid)
-                lines.append(
-                    f"  GPU {gid}      : {props.name}  "
-                    f"({props.total_memory / 1e9:.1f} GB VRAM)"
-                )
+            props = torch.cuda.get_device_properties(self.device)
             lines += [
-                f"DataParallel : {'yes' if n_gpus > 1 else 'no (single GPU)'}",
+                f"GPU          : {props.name} ({props.total_memory / 1e9:.1f} GB VRAM)",
                 f"cuDNN bench  : {torch.backends.cudnn.benchmark}",
                 f"TF32 matmul  : {torch.backends.cuda.matmul.allow_tf32}",
                 f"TF32 cuDNN   : {torch.backends.cudnn.allow_tf32}",
