@@ -489,6 +489,7 @@ and a `.png` comparison bar chart.
 ---
 
 
+### Training Outputs
 * **Checkpoints**: Periodic model weights are saved to `checkpoints/garro_<topology>_ep<N>.pt`.
 * **Final Model**: The converged weights are saved to `checkpoints/garro_<topology>_final.pt`.
 * **Training Curve**: A plot of episodic rewards over time is saved to `checkpoints/training_curve_<topology>.png`.
