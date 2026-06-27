@@ -100,15 +100,20 @@ def _best_device() -> torch.device:
 def _autocast_dtype(device: torch.device) -> torch.dtype:
     """
     Choose the best reduced-precision dtype for autocast.
-    - CUDA with BF16 Tensor Cores  → bfloat16
-    - CUDA without BF16            → float16
-    - CPU with AVX-512 BF16        → bfloat16  (PyTorch 2.x)
-    - MPS                          → float16
-    - Fallback                     → float32   (autocast disabled)
+    - CUDA with native BF16 Tensor Cores (Ampere CC >= 8.0) → bfloat16
+    - CUDA Turing / T4 (CC 7.5)                              → float16
+    - CPU with AVX-512 BF16                                  → bfloat16
+    - MPS                                                    → float16
+    - Fallback                                               → float32
     """
     if device.type == "cuda":
-        if torch.cuda.is_bf16_supported():
-            return torch.bfloat16
+        try:
+            # Native hardware BF16 Tensor Cores arrived in Ampere (CC >= 8.0).
+            # Turing / T4 (CC 7.5) lacks native hardware BF16 support.
+            if torch.cuda.get_device_capability(device)[0] >= 8:
+                return torch.bfloat16
+        except Exception:
+            pass
         return torch.float16
     if device.type == "cpu":
         return torch.bfloat16
@@ -489,7 +494,15 @@ class PPOAgent:
                 except Exception:
                     pass  # older PyTorch versions may not support this
 
-        self._amp_dtype   = _autocast_dtype(self.device)
+        _cfg_amp = config.get("training", {}).get("amp_dtype", None)
+        if _cfg_amp == "float16":
+            self._amp_dtype = torch.float16
+        elif _cfg_amp == "bfloat16":
+            self._amp_dtype = torch.bfloat16
+        elif _cfg_amp == "float32":
+            self._amp_dtype = torch.float32
+        else:
+            self._amp_dtype = _autocast_dtype(self.device)
         self._amp_enabled = (self._amp_dtype != torch.float32)
 
         ppo_cfg = config["ppo"]
