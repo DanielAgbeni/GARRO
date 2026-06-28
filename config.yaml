@@ -29,9 +29,30 @@ training:
   max_steps_per_episode: 200      # Steps per episode before reset
   checkpoint_interval: 1000       # Save checkpoint every N episodes
   checkpoint_path: "checkpoints/"
-  update_interval: 1024           # Rollout steps before each PPO update (increased 512→1024 for diverse experience)
+  update_interval: 1024           # Rollout steps before each PPO update (base value; clamped by max_update_interval)
+  max_update_interval: 8192       # Hard ceiling on RAM-aware update_interval inflation (was uncapped at 32768)
   compile_model: true             # torch.compile encoder+AC-net (15–40% speedup; set false to debug)
   num_workers: 0                  # Reserved: parallel env workers (0 = single-process; future feature)
+
+# ── Topology-Specific Overrides ──────────────────────────────────────────────
+# Values here are merged into the ppo/training blocks AFTER hardware scaling.
+# Only the keys present here are overridden; all others use the shared defaults
+# above.  This lets GEANT2 and NSFNET coexist without conflicting configs.
+topology_overrides:
+  nsfnet:
+    # NSFNET (14 nodes, 21 links) — uses root-level defaults; no overrides needed.
+    ppo: {}
+    training: {}
+
+  geant2:
+    # GEANT2 (24 nodes, 37 links) — larger topology needs more exploration
+    # and a slower decay horizon to match its higher episode count.
+    ppo:
+      entropy_coef: 0.05          # Higher than NSFNET (0.03) — forces exploration on larger action space
+      gae_lambda: 0.99            # Longer credit assignment; GEANT2 avg path = 2.99 hops
+      clip_epsilon: 0.15          # Slightly relaxed from 0.1 — allows larger policy steps during early exploration
+    training:
+      update_interval: 2048       # Larger rollout for 24-node graph; still safe with max_update_interval=8192
 
 reward_weights:
   alpha1: 0.35                    # Throughput weight (reduced 0.4→0.35 to give room to delay)

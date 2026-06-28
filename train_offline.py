@@ -146,14 +146,17 @@ def main(args):
         # When multiple GPUs are present, DataParallel splits each update
         # batch across all GPUs — we can double again to fill them.
         batch_size      = max(base_batch, 256)        # 64  → 256  (single T4)
-        update_interval = max(base_interval, 2048)    # 512 → 2048 (single T4)
-        update_epochs   = max(base_epochs, 15)        # 10  → 15
+        update_interval = max(base_interval, 1024)    # respect config, 1024 minimum for CUDA
+        update_epochs   = base_epochs                 # respect config — do NOT override
+        # NOTE: Forcing update_epochs=15 with clip_epsilon=0.1 caused
+        # catastrophic over-fitting on stale data.  The config value (5)
+        # is already tuned for the tight clip range.
 
         if n_gpus > 1:
             # Linear batch-size scaling: each GPU processes batch_size // n_gpus
             # samples; doubling the global size keeps per-GPU load identical.
             batch_size      *= n_gpus                 # 256 → 512 for T4×2
-            update_interval *= n_gpus                 # 2048 → 4096 for T4×2
+            update_interval *= n_gpus                 # 1024 → 2048 for T4×2
             # Linear LR scaling rule (Goyal et al., 2017):
             # scale LR proportionally when effective batch size increases.
             config["ppo"]["lr_actor"]  = min(
@@ -192,6 +195,21 @@ def main(args):
         device, n_cores, compile_model, args.topology,
         total_episodes, batch_size, update_interval, cuda_scaled, n_gpus,
     )
+
+    # ── Apply topology-specific PPO overrides ────────────────────────────
+    # config.yaml can contain a `topology_overrides.<topology>` block with
+    # any ppo/training keys.  These are merged AFTER hardware scaling so
+    # each topology gets its own tuned hyperparameters without touching the
+    # shared defaults that the other topology's run uses.
+    _topo_overrides = config.get("topology_overrides", {}).get(args.topology, {})
+    if _topo_overrides:
+        _ppo_ov = _topo_overrides.get("ppo", {})
+        _trn_ov = _topo_overrides.get("training", {})
+        config["ppo"].update(_ppo_ov)
+        config["training"].update(_trn_ov)
+        if _ppo_ov or _trn_ov:
+            print(f"[TopologyOverride] Applied {args.topology} overrides: "
+                  f"ppo={_ppo_ov}  training={_trn_ov}")
 
     # ── Build graph + environment ─────────────────────────────────────────
     G   = TOPOLOGY_MAP[args.topology]()

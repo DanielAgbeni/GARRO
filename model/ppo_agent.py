@@ -586,51 +586,79 @@ class PPOAgent:
 
         self.buffer = RolloutBuffer()
 
-        # ── RAM-aware rollout buffer sizing ───────────────────────────────
+        # ── Rollout buffer sizing (config-controlled, RAM sanity-checked) ──
         # Each stored state is a lightweight telemetry dict (~1–4 KB).
-        # With 30 GB RAM we can buffer a massive rollout horizon, giving
-        # the GAE estimator a much longer credit-assignment window and
-        # reducing the number of (expensive) PPO gradient update calls.
+        # update_interval controls how many environment steps are collected
+        # before each PPO update.  Larger values give GAE a longer credit-
+        # assignment window but make gradient updates noisier and stale.
         #
-        # Tier table (available system RAM → max update_interval cap):
-        #   ≥ 24 GB  → 32 768  (Kaggle T4 ×2 / Colab Pro+)
-        #   ≥ 12 GB  → 16 384  (Colab standard / high-RAM CPU)
-        #   ≥  6 GB  →  8 192
-        #   <  6 GB  →  4 096  (safe floor)
+        # The old logic used max(config_value, ram_tier_cap), which silently
+        # inflated 1 024 → 32 768 on Kaggle (31 GB RAM), making each PPO
+        # update span ~163 full episodes and effectively destroying the
+        # learning signal.  Replaced with min() so the config value is an
+        # upper bound, capped by max_update_interval for safety.
+        #
+        # RAM-based floor ensures we never go below what the machine can
+        # comfortably handle:
+        #   ≥ 24 GB  → floor 2 048
+        #   ≥ 12 GB  → floor 1 024
+        #   ≥  6 GB  → floor  512
+        #   <  6 GB  → floor  256 (safe minimum)
         try:
             import psutil
             _ram_gb = psutil.virtual_memory().available / 1e9
         except ImportError:
             _ram_gb = 0.0
 
-        _cfg_interval = config.get("training", {}).get("update_interval", 4096)
-        if _ram_gb >= 24.0:
-            _ram_cap = 32_768
-        elif _ram_gb >= 12.0:
-            _ram_cap = 16_384
-        elif _ram_gb >= 6.0:
-            _ram_cap = 8_192
-        else:
-            _ram_cap = 4_096
+        _cfg_interval = config.get("training", {}).get("update_interval", 1024)
+        # Hard ceiling from config (protects against over-large values)
+        _max_interval = config.get("training", {}).get("max_update_interval", 8192)
 
-        # Use the larger of the config value and the RAM-tier cap
-        self._update_interval = max(_cfg_interval, _ram_cap)
+        # RAM-aware *floor* (minimum sensible horizon per machine tier)
+        if _ram_gb >= 24.0:
+            _ram_floor = 2_048
+        elif _ram_gb >= 12.0:
+            _ram_floor = 1_024
+        elif _ram_gb >= 6.0:
+            _ram_floor = 512
+        else:
+            _ram_floor = 256
+
+        # Clamp: floor ≤ config ≤ ceiling
+        self._update_interval = int(np.clip(_cfg_interval, _ram_floor, _max_interval))
         if self._update_interval != _cfg_interval:
             print(
-                f"[PPO] RAM-aware rollout scaling: {_ram_gb:.1f} GB available → "
-                f"update_interval {_cfg_interval} → {self._update_interval} "
-                f"(longer GAE horizon, fewer updates per episode)"
+                f"[PPO] update_interval clamped: config={_cfg_interval} → "
+                f"{self._update_interval} "
+                f"(RAM floor={_ram_floor}, ceiling={_max_interval}, "
+                f"available RAM={_ram_gb:.1f} GB)"
             )
 
         # ── LR Schedulers (CosineAnnealingLR) ─────────────────────────────
-        # Decays LR from initial value down to eta_min over offline_episodes.
-        # Falls back gracefully if training config is absent.
-        _t_max = config.get("training", {}).get("offline_episodes", 10000)
+        # scheduler.step() is called once per PPO update, NOT once per
+        # episode.  T_max must equal the *number of update calls* over the
+        # full training run, not the episode count.
+        #
+        # Expected update calls ≈ (total_episodes × steps_per_episode)
+        #                          ──────────────────────────────────────
+        #                                  update_interval
+        #
+        # Using offline_episodes directly (old behaviour) caused the LR to
+        # hit eta_min after only ~300 calls (~3 000 episodes on GEANT2),
+        # freezing the model well before any meaningful learning occurred.
+        _total_episodes = config.get("training", {}).get("offline_episodes", 10000)
+        _steps_per_ep   = config.get("training", {}).get("max_steps_per_episode", 200)
+        _t_max = max(100, (_total_episodes * _steps_per_ep) // self._update_interval)
         self.scheduler_encoder = CosineAnnealingLR(
             self.opt_encoder, T_max=_t_max, eta_min=1e-5
         )
         self.scheduler_ac = CosineAnnealingLR(
             self.opt_ac, T_max=_t_max, eta_min=1e-5
+        )
+        print(
+            f"[PPO] LR scheduler T_max={_t_max} updates "
+            f"({_total_episodes} eps × {_steps_per_ep} steps "
+            f"÷ {self._update_interval} update_interval)"
         )
 
         # Mixed precision scaler (only meaningful for CUDA float16)
