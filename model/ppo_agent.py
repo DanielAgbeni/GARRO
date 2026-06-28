@@ -196,7 +196,10 @@ class ActorCriticNetwork(nn.Module):
         logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
         logits = torch.clamp(logits, -20.0, 20.0)
         if mask is not None and bool(mask.any().item()):
-            logits = logits.masked_fill(~mask, -1e9)
+            # Use -1e4 instead of -1e9: large enough to zero-out probabilities
+            # after softmax, but safely within float16 range (~65504 max).
+            fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
+            logits = logits.masked_fill(~mask, fill_val)
 
         dist = Categorical(logits=logits)
         if deterministic:
