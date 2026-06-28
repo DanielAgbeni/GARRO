@@ -193,8 +193,10 @@ class ActorCriticNetwork(nn.Module):
         """
         logits, value = self.forward(latent)
 
-        if mask is not None:
-            logits = logits.masked_fill(~mask, float("-inf"))
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
+        logits = torch.clamp(logits, -20.0, 20.0)
+        if mask is not None and bool(mask.any().item()):
+            logits = logits.masked_fill(~mask, -1e9)
 
         dist = Categorical(logits=logits)
         if deterministic:
@@ -754,23 +756,23 @@ class PPOAgent:
         values  = np.array(self.buffer.values,  dtype=np.float64)
         dones   = np.array(self.buffer.dones,   dtype=np.float64)
 
-        not_done   = 1.0 - dones
-        next_vals  = np.append(values[1:], 0.0)          # V(s_{t+1}); terminal = 0
-        deltas     = rewards + self.gamma * next_vals * not_done - values
-
-        # IIR filter implements: gae[t] = delta[t] + (γλ) * not_done[t] * gae[t+1]
-        # Reverse the sequence, apply causal filter, reverse back.
-        discount   = self.gamma * self.gae_lambda
-        # lfilter([1], [1, -discount]) on reversed deltas gives the running sum
-        # We must also gate each step by not_done; fold it into deltas first.
-        # For episodes that don't reset mid-rollout this is exact.
-        # For mid-rollout resets: multiply reversed not_done into the filter input.
-        gated      = deltas * not_done  # zero out post-terminal deltas
-        # Append the terminal delta (ungated) back
-        gated[dones.astype(bool)] = deltas[dones.astype(bool)]
-        advantages = lfilter([1.0], [1.0, -discount], deltas[::-1])[::-1].copy()
+        advantages = np.zeros(T, dtype=np.float64)
+        gae = 0.0
+        for t in range(T - 1, -1, -1):
+            if t == T - 1:
+                next_value = 0.0
+            else:
+                next_value = values[t + 1]
+            nonterminal = 1.0 - dones[t]
+            delta = rewards[t] + self.gamma * next_value * nonterminal - values[t]
+            gae = delta + self.gamma * self.gae_lambda * nonterminal * gae
+            advantages[t] = gae
 
         returns = advantages + values
+        returns = np.nan_to_num(returns, nan=0.0, posinf=1_000.0, neginf=-1_000.0)
+        advantages = np.nan_to_num(
+            advantages, nan=0.0, posinf=1_000.0, neginf=-1_000.0
+        )
         return advantages.astype(np.float32), returns.astype(np.float32)
 
     # ── PPO Update ────────────────────────────────────────────────────────────
@@ -869,6 +871,10 @@ class PPOAgent:
                     enabled=self._amp_enabled,
                 ):
                     logits, values_pred = self.ac_net(b_latents)
+                    logits = torch.nan_to_num(
+                        logits, nan=0.0, posinf=20.0, neginf=-20.0
+                    )
+                    logits = torch.clamp(logits, -20.0, 20.0)
                     dist          = Categorical(logits=logits)
                     new_log_probs = dist.log_prob(b_actions)
                     entropy       = dist.entropy().mean()
@@ -886,10 +892,16 @@ class PPOAgent:
                         - self.entropy_coef * entropy
                     )
 
+                if not torch.isfinite(loss):
+                    continue
+
                 self.opt_ac.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.opt_ac)
-                nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
+                grad_norm = nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
+                if not torch.isfinite(grad_norm):
+                    self.opt_ac.zero_grad(set_to_none=True)
+                    continue
                 self.scaler.step(self.opt_ac)
                 self.scaler.update()
 
@@ -919,6 +931,10 @@ class PPOAgent:
         ):
             enc_lat_slice    = self.encoder(enc_pyg)              # [enc_size, hidden_dim]
             logits_e, vals_e = self.ac_net(enc_lat_slice)
+            logits_e = torch.nan_to_num(
+                logits_e, nan=0.0, posinf=20.0, neginf=-20.0
+            )
+            logits_e = torch.clamp(logits_e, -20.0, 20.0)
             dist_e           = Categorical(logits=logits_e)
             new_lp_e         = dist_e.log_prob(actions[enc_idx])
             ent_e            = dist_e.entropy().mean()
@@ -935,15 +951,19 @@ class PPOAgent:
                 - self.entropy_coef * ent_e
             )
 
-        self.opt_encoder.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
-        self.scaler.scale(enc_loss).backward()
-        self.scaler.unscale_(self.opt_encoder)
-        nn.utils.clip_grad_norm_(
-            list(self.encoder.parameters()) + list(self.ac_net.parameters()),
-            max_norm=0.5,
-        )
-        self.scaler.step(self.opt_encoder)
-        self.scaler.update()
+        if torch.isfinite(enc_loss):
+            self.opt_encoder.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
+            self.scaler.scale(enc_loss).backward()
+            self.scaler.unscale_(self.opt_encoder)
+            enc_grad_norm = nn.utils.clip_grad_norm_(
+                self.encoder.parameters(),
+                max_norm=0.5,
+            )
+            if torch.isfinite(enc_grad_norm):
+                self.scaler.step(self.opt_encoder)
+                self.scaler.update()
+            else:
+                self.opt_encoder.zero_grad(set_to_none=True)
 
         self.buffer.clear()
 
