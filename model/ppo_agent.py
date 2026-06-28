@@ -904,9 +904,10 @@ class PPOAgent:
                 grad_norm = nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
                 if not torch.isfinite(grad_norm):
                     self.opt_ac.zero_grad(set_to_none=True)
+                    self.scaler.update()  # must advance scaler even when skipping step
                     continue
                 self.scaler.step(self.opt_ac)
-                self.scaler.update()
+                self.scaler.update()  # one update() per backward() — called here, not outside the loop
 
                 with torch.no_grad():
                     approx_kl = (b_old_lp - new_log_probs).mean().item()
