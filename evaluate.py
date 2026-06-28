@@ -161,6 +161,7 @@ def run_garro(
     env:      MM1KNetworkEnv,
     agent:    PPOAgent,
     episodes: int,
+    deterministic: bool = True,
 ) -> dict:
     """
     GARRO (PPO + Graph Transformer) evaluation — no gradient updates.
@@ -176,7 +177,9 @@ def run_garro(
         done   = False
         ep_r   = 0.0
         while not done:
-            action, _, _ = agent.select_action(env.G, env.candidate_paths)
+            action, _, _ = agent.select_action(
+                env.G, env.candidate_paths, deterministic=deterministic
+            )
             obs, r, terminated, truncated, _ = env.step(action)
             done  = terminated or truncated
             ep_r += r

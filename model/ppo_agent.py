@@ -175,6 +175,7 @@ class ActorCriticNetwork(nn.Module):
         self,
         latent: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        deterministic: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Sample an action from the policy.
@@ -195,8 +196,11 @@ class ActorCriticNetwork(nn.Module):
         if mask is not None:
             logits = logits.masked_fill(~mask, float("-inf"))
 
-        dist     = Categorical(logits=logits)
-        action   = dist.sample()
+        dist = Categorical(logits=logits)
+        if deterministic:
+            action = torch.argmax(logits, dim=-1)
+        else:
+            action = dist.sample()
         log_prob = dist.log_prob(action)
         return action, log_prob, value
 
@@ -696,6 +700,7 @@ class PPOAgent:
         self,
         graph: nx.Graph,
         candidate_paths: list,
+        deterministic: bool = False,
     ) -> Tuple[int, float, float]:
         """
         Select a routing action given the current network state graph.
@@ -720,7 +725,9 @@ class PPOAgent:
             dtype=self._amp_dtype,
             enabled=self._amp_enabled,
         ):
-            action, log_prob, value = self.ac_net.get_action(latent, mask)
+            action, log_prob, value = self.ac_net.get_action(
+                latent, mask, deterministic=deterministic
+            )
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     # ── GAE Advantage Estimation (truly vectorised via scipy lfilter) ──────────

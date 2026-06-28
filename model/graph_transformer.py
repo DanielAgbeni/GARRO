@@ -165,7 +165,7 @@ class GraphConverter:
         self.n_total = self.n_real + 1       # must equal encoder's max_nodes
         self._idx    = {n: i for i, n in enumerate(self.nodes)}
 
-        # ── Pre-compute static edge_index + edge_attr (runs once) ─────────
+        # ── Pre-compute static edge_index + edge_attr skeleton (runs once) ─
         src:   List[int]         = []
         dst:   List[int]         = []
         attrs: List[List[float]] = []
@@ -194,6 +194,7 @@ class GraphConverter:
         self._x[-1, -1] = 1.0          # star-node flag; permanent
 
         self._feat_np = np.empty((self.n_real, NODE_FEAT_DIM), dtype=np.float32)
+        self._edge_pairs = list(G.edges())
 
     def step(self, G: nx.Graph, clone: bool = True) -> Data:
         """
@@ -219,10 +220,23 @@ class GraphConverter:
             torch.from_numpy(feat), non_blocking=True
         )
 
+        curr = 0
+        for u, v in self._edge_pairs:
+            edge = G.edges[u, v]
+            util = float(np.clip(edge.get("utilization", 0.0), 0.0, 1.0))
+            loss = float(np.clip(edge.get("packet_loss", 0.0), 0.0, 1.0))
+            self.edge_attr[curr, 1] = util
+            self.edge_attr[curr, 3] = loss
+            self.edge_attr[curr + 1, 1] = util
+            self.edge_attr[curr + 1, 3] = loss
+            curr += 2
+
+        edge_attr = self.edge_attr.clone() if clone else self.edge_attr
+
         return Data(
             x          = self._x.clone() if clone else self._x,
             edge_index = self.edge_index,
-            edge_attr  = self.edge_attr,
+            edge_attr  = edge_attr,
             batch      = self.batch,
         )
 

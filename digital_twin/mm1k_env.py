@@ -254,13 +254,20 @@ class MM1KNetworkEnv(GymEnv):
                         if e_idx is not None:
                             self._edge_to_pairs[e_idx].append((self._sorted_nodes.index(u), self._sorted_nodes.index(v)))
 
-        if total_hops > 0:
-            tg_base_rate = self.base_lam * self.n_edges / total_hops
+        if total_hops > 0 and num_pairs > 0:
+            avg_path_len = total_hops / num_pairs
+            # TrafficGenerator normalizes the mean row-sum to base_rate, so
+            # total offered demand is roughly num_nodes * base_rate. Choose
+            # base_rate so average edge load lands near base_lam.
+            tg_base_rate = self.base_lam * self.n_edges / (
+                self.num_nodes * avg_path_len
+            )
         else:
+            avg_path_len = 0.0
             tg_base_rate = self.base_lam
 
-        print(f"[MM1KEnv] Precomputed average path length: {total_hops/num_pairs if num_pairs > 0 else 0:.2f} hops")
-        print(f"[MM1KEnv] Scaling TrafficGenerator base_rate from {self.base_lam} to {tg_base_rate:.2f} to match capacity")
+        print(f"[MM1KEnv] Precomputed average path length: {avg_path_len:.2f} hops")
+        print(f"[MM1KEnv] Scaling TrafficGenerator base_rate from {self.base_lam} to {tg_base_rate:.2f} to target average edge load")
 
         cov = config.get("mm1k", {}).get("cov", 0.5)
         burst_prob = config.get("mm1k", {}).get("burst_prob", 0.10)
@@ -317,9 +324,48 @@ class MM1KNetworkEnv(GymEnv):
             for future in as_completed(futures):
                 self._all_paths.update(future.result())
 
-    def _simulate_traffic(self):
+    def _add_path_load(self, path: List[int], demand: float) -> None:
+        """Add the current routed demand to the selected path's edge arrivals."""
+        if not path or len(path) < 2 or demand == 0.0:
+            return
+
+        edge_index = {
+            edge: idx for idx, edge in enumerate(self.edges_list)
+        }
+        edge_index.update({
+            (v, u): idx for idx, (u, v) in enumerate(self.edges_list)
+        })
+
+        for u, v in zip(path[:-1], path[1:]):
+            idx = edge_index.get((u, v))
+            if idx is not None:
+                self._lam_arr[idx] += demand
+
+    def _update_queue_state(self) -> None:
+        """Refresh queue metrics from current arrival/service-rate arrays."""
+        _, P_overflow, delay_ms = mm1k_metrics_vec(
+            self._lam_arr, self._mu_arr, self.K_buf
+        )
+        util = np.clip(self._lam_arr / (self._mu_arr + 1e-9), 0.0, 1.0)
+
+        for i, (u, v) in enumerate(self.edges_list):
+            self.G.edges[u, v]["utilization"] = float(util[i])
+            self.G.edges[u, v]["packet_loss"] = float(P_overflow[i])
+            self.G.edges[u, v]["queuing_delay"] = float(delay_ms[i])
+
+        self._util_arr = util
+        self._ploss_arr = P_overflow
+        self._delay_ms_arr = delay_ms
+
+    def _simulate_traffic(self, selected_path: Optional[List[int]] = None):
         """
         Inject Modulated Gravity traffic onto all edges using the TrafficGenerator.
+
+        If `selected_path` is provided, the current (src, dst) demand is removed
+        from the default shortest-path background routing and injected onto the
+        action-selected path. This makes the RL action causally affect the
+        queueing state, matching the SDN controller setting where GARRO installs
+        forwarding for the active flow/demand.
         """
         T = self.traffic_gen.generate()
 
@@ -327,25 +373,27 @@ class MM1KNetworkEnv(GymEnv):
         for e_idx in range(self.n_edges):
             self._lam_arr[e_idx] = sum(T[i, j] for i, j in self._edge_to_pairs[e_idx])
 
+        if (
+            selected_path is not None
+            and self.current_src in self._sorted_nodes
+            and self.current_dst in self._sorted_nodes
+        ):
+            src_idx = self._sorted_nodes.index(self.current_src)
+            dst_idx = self._sorted_nodes.index(self.current_dst)
+            demand = float(T[src_idx, dst_idx])
+            default_path = (
+                self._all_paths.get((self.current_src, self.current_dst), [[]])[0]
+                if self._all_paths.get((self.current_src, self.current_dst))
+                else []
+            )
+            self._add_path_load(default_path, -demand)
+            self._add_path_load(selected_path, demand)
+            self._lam_arr[:] = np.clip(self._lam_arr, 0.0, None)
+
         # Service rates are subject to some independent random variation
         self._mu_arr[:] = self.base_mu * np.random.uniform(0.8, 1.2, self.n_edges)
 
-        # Vectorized M/M/1/K — all edges at once
-        _, P_overflow, delay_ms = mm1k_metrics_vec(
-            self._lam_arr, self._mu_arr, self.K_buf
-        )
-        util = np.clip(self._lam_arr / (self._mu_arr + 1e-9), 0.0, 1.0)
-
-        # Write results back to NetworkX graph
-        for i, (u, v) in enumerate(self.edges_list):
-            self.G.edges[u, v]["utilization"]  = float(util[i])
-            self.G.edges[u, v]["packet_loss"]  = float(P_overflow[i])
-            self.G.edges[u, v]["queuing_delay"] = float(delay_ms[i])
-
-        # Cache arrays for fast reward computation
-        self._util_arr    = util
-        self._ploss_arr   = P_overflow
-        self._delay_ms_arr = delay_ms
+        self._update_queue_state()
 
     def _get_obs(self) -> np.ndarray:
         """
@@ -524,17 +572,8 @@ class MM1KNetworkEnv(GymEnv):
                 self.candidate_paths[0] if self.candidate_paths else []
             )
 
+        self._simulate_traffic(selected_path)
         reward = self._compute_reward(selected_path)
-
-        # Apply utilisation increase along selected path (vectorized)
-        for u, v in zip(selected_path[:-1], selected_path[1:]):
-            for key in [(u, v), (v, u)]:
-                if key in self.G.edges:
-                    self.G.edges[key]["utilization"] = float(
-                        np.clip(self.G.edges[key]["utilization"] + 0.05, 0.0, 1.0)
-                    )
-
-        self._simulate_traffic()
 
         terminated = self.step_count >= self.max_steps
         truncated  = False
