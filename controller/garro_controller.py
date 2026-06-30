@@ -175,7 +175,13 @@ class GARROController(app_manager.OSKenApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
-        """Basic L2 learning switch for non-DRL-managed flows."""
+        """Basic L2 learning switch for non-DRL-managed flows.
+
+        Handles:
+        - LLDP: ignored here (topology module processes it)
+        - ARP:  always flood so hosts can resolve each other
+        - Other: unicast forwarding with flow installation once dst is known
+        """
         msg = ev.msg
         dp = msg.datapath
         ofp = dp.ofproto
@@ -191,17 +197,32 @@ class GARROController(app_manager.OSKenApp):
 
         dst = eth.dst
         src = eth.src
+
+        # Learn source MAC → in_port mapping
         self.mac_to_port[dpid][src] = in_port
 
-        out_port = (
-            self.mac_to_port[dpid].get(dst, ofp.OFPP_FLOOD)
-        )
+        # Always flood ARP so hosts can resolve each other across the topology
+        if eth.ethertype == ether_types.ETH_TYPE_ARP:
+            out_port = ofp.OFPP_FLOOD
+        else:
+            out_port = self.mac_to_port[dpid].get(dst, ofp.OFPP_FLOOD)
 
         actions = [parser.OFPActionOutput(out_port)]
 
         if out_port != ofp.OFPP_FLOOD:
+            # Install forward flow: in_port → dst
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
             self._add_flow(dp, 1, match, actions, idle_timeout=30)
+
+            # Install reverse flow: out_port → src (so replies don't need
+            # to come back to controller on this switch)
+            known_src_port = self.mac_to_port[dpid].get(src)
+            if known_src_port is not None:
+                rev_match = parser.OFPMatch(
+                    in_port=out_port, eth_dst=src
+                )
+                rev_actions = [parser.OFPActionOutput(known_src_port)]
+                self._add_flow(dp, 1, rev_match, rev_actions, idle_timeout=30)
 
         data = msg.data if msg.buffer_id == ofp.OFP_NO_BUFFER else None
         out = parser.OFPPacketOut(
