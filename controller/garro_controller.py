@@ -26,6 +26,10 @@ import time
 import os
 import networkx as nx
 from collections import defaultdict
+
+import warnings
+warnings.filterwarnings("ignore", message=".*Eventlet.*")
+
 import eventlet
 import eventlet.wsgi
 from flask import Flask, jsonify, request, render_template
