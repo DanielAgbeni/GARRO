@@ -123,11 +123,20 @@ class GARROController(app_manager.OSKenApp):
         self.current_intent: str = "Balance load across all links while maintaining reasonable latency for mixed traffic."
         self.current_weights: dict = {"alpha1": 0.4, "alpha2": 0.3, "alpha3": 0.2, "alpha4": 0.1}
 
+        # Tracks (dpid, src_mac) pairs that have already been flooded this
+        # cycle. Cleared every 30s (matching flow idle_timeout) so hosts can
+        # re-ARP after flow entries expire. Using a set avoids broadcast storms
+        # in the looped mesh topology without permanently silencing hosts.
+        self.flooded_srcs: set = set()
+
         # Telemetry polling thread (every 2 seconds)
         self.monitor_thread = hub.spawn(self._monitor_loop)
 
         # Flask REST API thread (running on port 8080)
         self.flask_thread = hub.spawn(self._run_flask_server)
+
+        # Periodic flood-set clearer (every 30 seconds)
+        self.flood_clear_thread = hub.spawn(self._clear_flooded_srcs)
 
     def _run_flask_server(self):
         """Runs the Flask REST API on eventlet's WSGI server."""
@@ -200,17 +209,16 @@ class GARROController(app_manager.OSKenApp):
         src = eth.src
         is_broadcast = (dst == "ff:ff:ff:ff:ff:ff")
 
-        # Check BEFORE updating so we can detect re-circulated broadcasts
-        already_seen_on_switch = src in self.mac_to_port[dpid]
-
         # Learn source MAC → in_port
         self.mac_to_port[dpid][src] = in_port
 
         if is_broadcast:
-            if already_seen_on_switch:
-                # This switch has already flooded a broadcast from this source.
-                # The packet is re-circulating through a loop — drop it.
+            flood_key = (dpid, src)
+            if flood_key in self.flooded_srcs:
+                # Already flooded this broadcast on this switch this cycle.
+                # The packet is re-circulating through a mesh loop — drop it.
                 return
+            self.flooded_srcs.add(flood_key)
             out_port = ofp.OFPP_FLOOD
         else:
             # Unicast (including ARP replies): look up destination in MAC table
@@ -255,6 +263,16 @@ class GARROController(app_manager.OSKenApp):
             }
 
     # ── Telemetry Polling ──────────────────────────────────────────────────
+
+    def _clear_flooded_srcs(self):
+        """Clear the broadcast flood-tracking set every 30 seconds.
+
+        This matches the flow idle_timeout so hosts can re-ARP once their
+        learned MAC entries expire, without causing broadcast storms.
+        """
+        while True:
+            hub.sleep(30)
+            self.flooded_srcs.clear()
 
     def _monitor_loop(self):
         """Continuously poll switch statistics every 2 seconds."""
