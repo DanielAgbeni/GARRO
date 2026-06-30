@@ -178,9 +178,10 @@ class GARROController(app_manager.OSKenApp):
         """Basic L2 learning switch for non-DRL-managed flows.
 
         Handles:
-        - LLDP: ignored here (topology module processes it)
-        - ARP:  always flood so hosts can resolve each other
-        - Other: unicast forwarding with flow installation once dst is known
+        - LLDP:      ignored (topology module handles it)
+        - Broadcast: flooded with per-switch loop detection to prevent storms
+                     in the mesh topology (ARP requests, etc.)
+        - Unicast:   forwarded via MAC table; flooded only if dst unknown
         """
         msg = ev.msg
         dp = msg.datapath
@@ -197,30 +198,35 @@ class GARROController(app_manager.OSKenApp):
 
         dst = eth.dst
         src = eth.src
+        is_broadcast = (dst == "ff:ff:ff:ff:ff:ff")
 
-        # Learn source MAC → in_port mapping
+        # Check BEFORE updating so we can detect re-circulated broadcasts
+        already_seen_on_switch = src in self.mac_to_port[dpid]
+
+        # Learn source MAC → in_port
         self.mac_to_port[dpid][src] = in_port
 
-        # Always flood ARP so hosts can resolve each other across the topology
-        if eth.ethertype == ether_types.ETH_TYPE_ARP:
+        if is_broadcast:
+            if already_seen_on_switch:
+                # This switch has already flooded a broadcast from this source.
+                # The packet is re-circulating through a loop — drop it.
+                return
             out_port = ofp.OFPP_FLOOD
         else:
+            # Unicast (including ARP replies): look up destination in MAC table
             out_port = self.mac_to_port[dpid].get(dst, ofp.OFPP_FLOOD)
 
         actions = [parser.OFPActionOutput(out_port)]
 
         if out_port != ofp.OFPP_FLOOD:
-            # Install forward flow: in_port → dst
+            # Install forward flow
             match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
             self._add_flow(dp, 1, match, actions, idle_timeout=30)
 
-            # Install reverse flow: out_port → src (so replies don't need
-            # to come back to controller on this switch)
+            # Install reverse flow so replies don't re-hit the controller
             known_src_port = self.mac_to_port[dpid].get(src)
             if known_src_port is not None:
-                rev_match = parser.OFPMatch(
-                    in_port=out_port, eth_dst=src
-                )
+                rev_match = parser.OFPMatch(in_port=out_port, eth_dst=src)
                 rev_actions = [parser.OFPActionOutput(known_src_port)]
                 self._add_flow(dp, 1, rev_match, rev_actions, idle_timeout=30)
 

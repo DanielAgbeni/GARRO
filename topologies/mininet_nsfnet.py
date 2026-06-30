@@ -32,15 +32,11 @@ def build_nsfnet():
         sw = net.addSwitch(f"s{i}", protocols="OpenFlow13")
         switches.append(sw)
 
-    # Add hosts — each on its own /24 subnet so L3 routing works correctly.
-    # h{i} lives on 10.0.{i}.1/24, gateway is the switch interface 10.0.{i}.254
+    # Add hosts — all on the same /24 subnet so pure L2 switching works.
+    # No gateway/router needed: hosts ARP for each other directly.
     hosts = []
     for i, sw in enumerate(switches, start=1):
-        h = net.addHost(
-            f"h{i}",
-            ip=f"10.0.{i}.1/24",
-            defaultRoute=f"via 10.0.{i}.254",
-        )
+        h = net.addHost(f"h{i}", ip=f"10.0.0.{i}/24")
         net.addLink(h, sw, bw=100, delay="1ms")
         hosts.append(h)
 
