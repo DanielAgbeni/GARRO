@@ -27,10 +27,14 @@ import os
 import networkx as nx
 from collections import defaultdict
 
-import warnings
-warnings.filterwarnings("ignore", message=".*Eventlet.*")
+# Apply the recommended eventlet migration fix: switch to the asyncio hub
+import os
+os.environ["EVENTLET_HUB"] = "asyncio"
 
 import eventlet
+import eventlet.hubs
+eventlet.hubs.use_hub("eventlet.hubs.asyncio")
+
 import eventlet.wsgi
 from flask import Flask, jsonify, request, render_template
 
