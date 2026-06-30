@@ -135,7 +135,7 @@ class GARROController(app_manager.OSKenApp):
         # cycle. Cleared every 30s (matching flow idle_timeout) so hosts can
         # re-ARP after flow entries expire. Using a set avoids broadcast storms
         # in the looped mesh topology without permanently silencing hosts.
-        self.flooded_srcs: set = set()
+        self.flooded_srcs: dict = {}
 
         # Telemetry polling thread (every 2 seconds)
         self.monitor_thread = hub.spawn(self._monitor_loop)
@@ -226,7 +226,8 @@ class GARROController(app_manager.OSKenApp):
                 # Already flooded this exact packet on this switch.
                 # It's re-circulating through a mesh loop — drop it.
                 return
-            self.flooded_srcs.add(flood_key)
+            import time
+            self.flooded_srcs[flood_key] = time.time()
 
         # Learn source MAC → in_port (after loop detection to avoid poisoning MAC table!)
         self.mac_to_port[dpid][src] = in_port
@@ -272,14 +273,18 @@ class GARROController(app_manager.OSKenApp):
     # ── Telemetry Polling ──────────────────────────────────────────────────
 
     def _clear_flooded_srcs(self):
-        """Clear the broadcast flood-tracking set every 1 second.
+        """Clear the broadcast flood-tracking dict safely.
 
-        This breaks broadcast loops in the mesh topology (which take <100ms to recirculate)
-        while allowing hosts to retry identical ARP requests (which typically retry after 1s).
+        Entries are kept for at least 1 second to ensure that propagating 
+        broadcasts are fully suppressed across all mesh loops before being forgotten.
         """
+        import time
         while True:
             hub.sleep(1)
-            self.flooded_srcs.clear()
+            now = time.time()
+            stale = [k for k, v in self.flooded_srcs.items() if now - v > 1.0]
+            for k in stale:
+                del self.flooded_srcs[k]
 
     def _monitor_loop(self):
         """Continuously poll switch statistics every 2 seconds."""
