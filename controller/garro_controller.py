@@ -215,22 +215,21 @@ class GARROController(app_manager.OSKenApp):
 
         dst = eth.dst
         src = eth.src
-        is_broadcast = (dst == "ff:ff:ff:ff:ff:ff")
 
-        # Learn source MAC → in_port
-        self.mac_to_port[dpid][src] = in_port
+        # Unicast or Broadcast: look up destination in MAC table.
+        # Broadcast MACs won't be found, so they default to OFPP_FLOOD.
+        out_port = self.mac_to_port[dpid].get(dst, ofp.OFPP_FLOOD)
 
-        if is_broadcast:
-            flood_key = (dpid, src)
+        if out_port == ofp.OFPP_FLOOD:
+            flood_key = (dpid, hash(msg.data))
             if flood_key in self.flooded_srcs:
-                # Already flooded this broadcast on this switch this cycle.
-                # The packet is re-circulating through a mesh loop — drop it.
+                # Already flooded this exact packet on this switch.
+                # It's re-circulating through a mesh loop — drop it.
                 return
             self.flooded_srcs.add(flood_key)
-            out_port = ofp.OFPP_FLOOD
-        else:
-            # Unicast (including ARP replies): look up destination in MAC table
-            out_port = self.mac_to_port[dpid].get(dst, ofp.OFPP_FLOOD)
+
+        # Learn source MAC → in_port (after loop detection to avoid poisoning MAC table!)
+        self.mac_to_port[dpid][src] = in_port
 
         actions = [parser.OFPActionOutput(out_port)]
 
@@ -273,13 +272,13 @@ class GARROController(app_manager.OSKenApp):
     # ── Telemetry Polling ──────────────────────────────────────────────────
 
     def _clear_flooded_srcs(self):
-        """Clear the broadcast flood-tracking set every 30 seconds.
+        """Clear the broadcast flood-tracking set every 1 second.
 
-        This matches the flow idle_timeout so hosts can re-ARP once their
-        learned MAC entries expire, without causing broadcast storms.
+        This breaks broadcast loops in the mesh topology (which take <100ms to recirculate)
+        while allowing hosts to retry identical ARP requests (which typically retry after 1s).
         """
         while True:
-            hub.sleep(30)
+            hub.sleep(1)
             self.flooded_srcs.clear()
 
     def _monitor_loop(self):
