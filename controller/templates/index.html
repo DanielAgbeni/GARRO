@@ -392,104 +392,6 @@
             font-size: 12px;
             color: var(--muted-foreground);
         }
-
-        .spinner-lg {
-            width: 24px;
-            height: 24px;
-            border: 2px solid var(--border);
-            border-top-color: var(--foreground);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        /* ── Progress Bars ── */
-        .progress-group {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-
-        .progress-item {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 13px;
-            font-weight: 500;
-        }
-
-        .progress-val {
-            color: var(--muted-foreground);
-        }
-
-        .progress-track {
-            height: 8px;
-            background-color: var(--secondary);
-            border-radius: 9999px;
-            overflow: hidden;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background-color: var(--primary);
-            transition: width 0.5s ease;
-        }
-
-        /* ── Active Flows ── */
-        .flow-card {
-            border: 1px solid var(--border);
-            border-radius: calc(var(--radius) - 2px);
-            padding: 12px;
-            margin-bottom: 8px;
-            background-color: var(--background);
-        }
-
-        .flow-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-        }
-
-        .flow-route {
-            font-family: monospace;
-            font-size: 12px;
-            color: var(--muted-foreground);
-            word-break: break-all;
-        }
-
-        /* ── Vis.js Canvas ── */
-        .canvas-container {
-            flex: 1;
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            background-color: var(--card);
-            position: relative;
-            overflow: hidden;
-        }
-
-        #mynetwork {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-        }
-
-        .empty-state {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: var(--muted-foreground);
-            font-size: 14px;
-            text-align: center;
-            pointer-events: none;
-        }
     </style>
 </head>
 <body>
@@ -504,8 +406,7 @@
         </div>
     </header>
 
-    <!-- Toast container -->
-    <div id="toast-container"></div>
+    <div class="toast-container" id="toast-container"></div>
 
     <div class="main-container">
         <!-- Sidebar -->
@@ -516,81 +417,70 @@
                 <form id="intent-form">
                     <label class="label">Natural Language Routing Objective</label>
                     <textarea class="textarea" id="intent-input" placeholder="e.g. Optimize for ultra-low latency, or maximize throughput..."></textarea>
-                    <button class="btn btn-primary" id="submit-btn" type="submit">Submit Intent</button>
+                    <button class="btn btn-primary" id="submit-btn" type="submit">
+                        <span id="btn-text">Submit Intent</span>
+                    </button>
                 </form>
                 
                 <div style="margin-top: 24px;">
                     <div class="label">Active Configuration</div>
-                    <div class="intent-display" id="active-intent">Waiting for intent telemetry...</div>
+                    <div class="ai-orb-wrapper" id="intent-wrapper">
+                        <div class="intent-display" id="active-intent">Waiting for intent telemetry...</div>
+                    </div>
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card" id="weights-card">
                 <div class="card-title">DRL Reward Weights</div>
-                <div class="weights-card-inner">
-                    <!-- Overlay shown while LLM is processing -->
-                    <div class="weights-overlay" id="weights-overlay">
-                        <div class="spinner-lg"></div>
-                        <div class="weights-overlay-text">Recalculating weights<span class="loading-dots"></span></div>
+                <div class="progress-group">
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span class="tooltip-wrap">
+                                Throughput (α1)
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble">Controls how much the agent rewards maximizing total data transferred.</div>
+                            </span>
+                            <span class="progress-val" id="val-alpha1">0%</span>
+                        </div>
+                        <div class="progress-track"><div class="progress-fill" id="fill-alpha1" style="width: 0%"></div></div>
                     </div>
-                    <div class="progress-group">
-                        <div class="progress-item">
-                            <div class="progress-header">
-                                <span class="tooltip-wrap">
-                                    Throughput (α1)
-                                    <span class="tooltip-icon">?</span>
-                                    <div class="tooltip-bubble">
-                                        Controls how much the agent rewards maximizing total data transferred across the network. Higher α1 = prefer routes with the most bandwidth.
-                                    </div>
-                                </span>
-                                <span class="progress-val" id="val-alpha1">0%</span>
-                            </div>
-                            <div class="progress-track"><div class="progress-fill" id="fill-alpha1" style="width: 0%"></div></div>
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span class="tooltip-wrap">
+                                Delay (α2)
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble">Controls how much the agent penalizes end-to-end packet latency.</div>
+                            </span>
+                            <span class="progress-val" id="val-alpha2">0%</span>
                         </div>
-                        <div class="progress-item">
-                            <div class="progress-header">
-                                <span class="tooltip-wrap">
-                                    Delay (α2)
-                                    <span class="tooltip-icon">?</span>
-                                    <div class="tooltip-bubble">
-                                        Controls how much the agent penalizes end-to-end packet latency. Higher α2 = prefer the lowest-latency paths.
-                                    </div>
-                                </span>
-                                <span class="progress-val" id="val-alpha2">0%</span>
-                            </div>
-                            <div class="progress-track"><div class="progress-fill" id="fill-alpha2" style="width: 0%"></div></div>
+                        <div class="progress-track"><div class="progress-fill" id="fill-alpha2" style="width: 0%"></div></div>
+                    </div>
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span class="tooltip-wrap">
+                                Packet Loss (α3)
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble">Controls how much the agent penalizes dropped packets.</div>
+                            </span>
+                            <span class="progress-val" id="val-alpha3">0%</span>
                         </div>
-                        <div class="progress-item">
-                            <div class="progress-header">
-                                <span class="tooltip-wrap">
-                                    Packet Loss (α3)
-                                    <span class="tooltip-icon">?</span>
-                                    <div class="tooltip-bubble">
-                                        Controls how much the agent penalizes dropped packets. Higher α3 = avoid congested or unreliable links.
-                                    </div>
-                                </span>
-                                <span class="progress-val" id="val-alpha3">0%</span>
-                            </div>
-                            <div class="progress-track"><div class="progress-fill" id="fill-alpha3" style="width: 0%"></div></div>
+                        <div class="progress-track"><div class="progress-fill" id="fill-alpha3" style="width: 0%"></div></div>
+                    </div>
+                    <div class="progress-item">
+                        <div class="progress-header">
+                            <span class="tooltip-wrap">
+                                Load Balance (α4)
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble">Controls how much the agent rewards distributing traffic evenly.</div>
+                            </span>
+                            <span class="progress-val" id="val-alpha4">0%</span>
                         </div>
-                        <div class="progress-item">
-                            <div class="progress-header">
-                                <span class="tooltip-wrap">
-                                    Load Balance (α4)
-                                    <span class="tooltip-icon">?</span>
-                                    <div class="tooltip-bubble">
-                                        Controls how much the agent rewards distributing traffic evenly across all links. Higher α4 = avoid hotspots and overloaded paths.
-                                    </div>
-                                </span>
-                                <span class="progress-val" id="val-alpha4">0%</span>
-                            </div>
-                            <div class="progress-track"><div class="progress-fill" id="fill-alpha4" style="width: 0%"></div></div>
-                        </div>
+                        <div class="progress-track"><div class="progress-fill" id="fill-alpha4" style="width: 0%"></div></div>
                     </div>
                 </div>
             </div>
 
-            <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+            <div class="card" style="flex: 1; display: flex; flex-direction: column;" id="flows-card">
                 <div class="card-title">Active PPO Flows</div>
                 <div id="flow-list" style="overflow-y: auto; flex: 1;">
                     <div class="text-muted">No flows detected. Ping hosts to initiate routing.</div>
@@ -613,80 +503,98 @@
         let nodesDataset = new vis.DataSet([]);
         let edgesDataset = new vis.DataSet([]);
         let knownEdgeCount = 0;
+        let isProcessing = false;
+        let previousWeightsStr = "";
+        let processingTimeout = null;
 
-        // Zinc theme graph styling
-        const COLOR_NODE = '#27272a'; // Zinc 800
-        const COLOR_NODE_BORDER = '#71717a'; // Zinc 500
-        const COLOR_HOST = '#09090b'; // Zinc 950
-        const COLOR_LINK_INACTIVE = '#3f3f46'; // Zinc 700
-        const COLOR_LINK_ACTIVE = '#fafafa'; // Zinc 50 (White)
+        const COLOR_NODE = '#27272a';
+        const COLOR_NODE_BORDER = '#71717a';
+        const COLOR_HOST = '#09090b';
+        const COLOR_LINK_INACTIVE = '#3f3f46';
+        const COLOR_LINK_ACTIVE = '#fafafa';
         const COLOR_TEXT = '#fafafa';
+
+        function showToast(title, message) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.innerHTML = `
+                <svg class="toast-icon" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                <div>
+                    <strong style="display:block; margin-bottom:2px;">${title}</strong>
+                    <span style="color: #a1a1aa;">${message}</span>
+                </div>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.add('show'), 10);
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => toast.remove(), 400);
+            }, 5000);
+        }
+
+        function triggerFlashAnimations() {
+            const weightsCard = document.getElementById('weights-card');
+            const flowsCard = document.getElementById('flows-card');
+            weightsCard.classList.remove('flash-update');
+            flowsCard.classList.remove('flash-update');
+            void weightsCard.offsetWidth;
+            weightsCard.classList.add('flash-update');
+            flowsCard.classList.add('flash-update');
+        }
+
+        function finishProcessing() {
+            isProcessing = false;
+            clearTimeout(processingTimeout);
+            document.getElementById('intent-wrapper').classList.remove('processing');
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('btn-text').innerText = 'Submit Intent';
+            showToast("AI Optimization Complete", "LLM parsed intent & dynamically re-routed paths.");
+            triggerFlashAnimations();
+        }
 
         function initNetwork() {
             const container = document.getElementById('mynetwork');
             const data = { nodes: nodesDataset, edges: edgesDataset };
             const options = {
-                nodes: {
-                    font: { size: 12, face: 'Inter', color: COLOR_TEXT },
-                    borderWidth: 1,
-                    shadow: false
-                },
-                edges: {
-                    smooth: { type: 'continuous' },
-                    width: 1,
-                    shadow: false
-                },
+                nodes: { font: { size: 12, face: 'Inter', color: COLOR_TEXT }, borderWidth: 1, shadow: false },
+                edges: { smooth: { type: 'continuous' }, width: 1, shadow: false },
                 physics: {
-                    barnesHut: {
-                        gravitationalConstant: -2000,
-                        centralGravity: 0.3,
-                        springLength: 120,
-                        springConstant: 0.04
-                    },
+                    barnesHut: { gravitationalConstant: -2000, centralGravity: 0.3, springLength: 120, springConstant: 0.04 },
                     stabilization: { iterations: 150 }
                 },
                 interaction: { hover: true }
             };
             network = new vis.Network(container, data, options);
-            
-            network.on("stabilizationIterationsDone", function () {
-                network.fit();
-            });
+            network.on("stabilizationIterationsDone", () => network.fit());
         }
 
         async function fetchState() {
             try {
-                // Cache buster to ensure browser gets fresh data
                 const response = await fetch('/garro/state?t=' + new Date().getTime());
                 if (!response.ok) return;
                 const state = await response.json();
-
-                // 1. Intent Update
-                if (state.current_intent) {
-                    document.getElementById('active-intent').innerText = state.current_intent;
-                }
-
-                // 2. Weights Update
+                if (state.current_intent) document.getElementById('active-intent').innerText = state.current_intent;
+                
                 const w = state.current_weights || {};
                 updateProgress('alpha1', w.alpha1 || 0);
                 updateProgress('alpha2', w.alpha2 || 0);
                 updateProgress('alpha3', w.alpha3 || 0);
                 updateProgress('alpha4', w.alpha4 || 0);
 
-                // 3. Topology Build (wait for edges to exist to prevent physics explosion)
+                if (isProcessing) {
+                    const currentWeightsStr = JSON.stringify(w);
+                    if (currentWeightsStr !== previousWeightsStr) finishProcessing();
+                }
+
                 if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
                     document.getElementById('empty-map-text').style.display = 'none';
                     buildInitialTopology(state.nodes, state.edges);
                     knownEdgeCount = state.edges.length;
                 }
-
-                // 4. Flows Update
                 updateFlowsList(state.active_paths);
-                highlightActivePaths(state.active_paths, state.edges);
-
-            } catch (err) {
-                console.error("Telemetry fetch failed:", err);
-            }
+                highlightActivePaths(state.active_paths);
+            } catch (err) { console.error("Telemetry fetch failed:", err); }
         }
 
         function updateProgress(id, val) {
@@ -698,50 +606,16 @@
         function buildInitialTopology(nodes, edges) {
             nodesDataset.clear();
             edgesDataset.clear();
-
             nodes.forEach(n => {
                 const dpid = n.dpid;
-                
-                // Switch
-                nodesDataset.add({
-                    id: `s_${dpid}`,
-                    label: `SW ${dpid}`,
-                    shape: 'box',
-                    color: { background: COLOR_NODE, border: COLOR_NODE_BORDER }
-                });
-
-                // Host
-                nodesDataset.add({
-                    id: `h_${dpid}`,
-                    label: `H${dpid}\n10.0.0.${dpid}`,
-                    shape: 'box',
-                    color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
-                    font: { size: 10 }
-                });
-
-                // Host-Switch Link
-                edgesDataset.add({
-                    id: `link_h_${dpid}_s_${dpid}`,
-                    from: `h_${dpid}`,
-                    to: `s_${dpid}`,
-                    color: { color: COLOR_LINK_INACTIVE },
-                    dashes: true
-                });
+                nodesDataset.add({ id: `s_${dpid}`, label: `SW ${dpid}`, shape: 'box', color: { background: COLOR_NODE, border: COLOR_NODE_BORDER } });
+                nodesDataset.add({ id: `h_${dpid}`, label: `H${dpid}`, shape: 'box', color: { background: COLOR_HOST, border: COLOR_NODE_BORDER } });
+                edgesDataset.add({ id: `link_h_${dpid}_s_${dpid}`, from: `h_${dpid}`, to: `s_${dpid}`, color: { color: COLOR_LINK_INACTIVE }, dashes: true });
             });
-
             edges.forEach(e => {
-                const id1 = `edge_${e.src}_${e.dst}`;
-                const id2 = `edge_${e.dst}_${e.src}`;
-                if (!edgesDataset.get(id1) && !edgesDataset.get(id2)) {
-                    edgesDataset.add({
-                        id: id1,
-                        from: `s_${e.src}`,
-                        to: `s_${e.dst}`,
-                        color: { color: COLOR_LINK_INACTIVE }
-                    });
-                }
+                const id = `edge_${e.src}_${e.dst}`;
+                if (!edgesDataset.get(id)) edgesDataset.add({ id, from: `s_${e.src}`, to: `s_${e.dst}`, color: { color: COLOR_LINK_INACTIVE } });
             });
-
             if (network) network.fit();
         }
 
@@ -751,7 +625,6 @@
                 container.innerHTML = `<div class="text-muted">No flows detected. Ping hosts to initiate routing.</div>`;
                 return;
             }
-
             let html = "";
             for (const [demand, path] of Object.entries(activePaths)) {
                 html += `
@@ -767,49 +640,16 @@
             container.innerHTML = html;
         }
 
-        function highlightActivePaths(activePaths, edges) {
-            if (knownEdgeCount === 0) return;
-
-            // Reset all edges
+        function highlightActivePaths(activePaths) {
             edgesDataset.forEach(edge => {
                 const isHost = edge.id.startsWith('link_h_');
-                edgesDataset.update({
-                    id: edge.id,
-                    color: { color: COLOR_LINK_INACTIVE },
-                    width: 1,
-                    dashes: isHost
-                });
+                edgesDataset.update({ id: edge.id, color: { color: COLOR_LINK_INACTIVE }, width: 1, dashes: isHost });
             });
-
             if (!activePaths) return;
-
             for (const [demand, path] of Object.entries(activePaths)) {
-                if (path.length < 2) continue;
-
-                const hosts = demand.split('->');
-                const srcDpid = parseInt(hosts[0].split('.').pop());
-                const dstDpid = parseInt(hosts[1].split('.').pop());
-
-                const sEdge = `link_h_${srcDpid}_s_${srcDpid}`;
-                const dEdge = `link_h_${dstDpid}_s_${dstDpid}`;
-                
-                if (edgesDataset.get(sEdge)) edgesDataset.update({id: sEdge, color: {color: COLOR_LINK_ACTIVE}, width: 2, dashes: false});
-                if (edgesDataset.get(dEdge)) edgesDataset.update({id: dEdge, color: {color: COLOR_LINK_ACTIVE}, width: 2, dashes: false});
-
                 for (let i = 0; i < path.length - 1; i++) {
-                    const u = path[i];
-                    const v = path[i+1];
-                    const eId = `edge_${u}_${v}`;
-                    const rId = `edge_${v}_${u}`;
-                    const match = edgesDataset.get(eId) || edgesDataset.get(rId);
-                    
-                    if (match) {
-                        edgesDataset.update({
-                            id: match.id,
-                            color: { color: COLOR_LINK_ACTIVE },
-                            width: 3
-                        });
-                    }
+                    const match = edgesDataset.get(`edge_${path[i]}_${path[i+1]}`) || edgesDataset.get(`edge_${path[i+1]}_${path[i]}`);
+                    if (match) edgesDataset.update({ id: match.id, color: { color: COLOR_LINK_ACTIVE }, width: 3 });
                 }
             }
         }
@@ -821,13 +661,23 @@
             const text = input.value.trim();
             if (!text) return;
 
-            // — Loading state —
+            // Start Processing UI state
+            isProcessing = true;
+            document.getElementById('intent-wrapper').classList.add('processing');
             btn.disabled = true;
-            btn.classList.add('btn-loading');
-            btn.innerHTML = `<div class="spinner"></div><span class="loading-dots">Thinking</span>`;
+            document.getElementById('btn-text').innerText = "LLM computing weights...";
 
-            // Show overlay on weights card
-            document.getElementById('weights-overlay').classList.add('active');
+            // Snapshot current weights to detect change
+            try {
+                const res = await fetch('/garro/state?t=' + new Date().getTime());
+                const state = await res.json();
+                previousWeightsStr = JSON.stringify(state.current_weights || {});
+            } catch (e) {}
+
+            // Fallback timeout in case LLM fails or weights are identical
+            processingTimeout = setTimeout(() => {
+                if (isProcessing) finishProcessing();
+            }, 12000);
 
             try {
                 const res = await fetch('/garro/intent', {
@@ -838,23 +688,13 @@
 
                 if (res.ok) {
                     input.value = "";
-                    showToast('success', 'Intent Applied', 'The LLM has updated the routing objective and reward weights.');
                 } else {
-                    let detail = `Server returned ${res.status}`;
-                    try {
-                        const body = await res.json();
-                        if (body.error) detail = body.error;
-                    } catch (_) {}
-                    showToast('error', 'Submission Failed', detail);
+                    showToast("Error", "Failed to submit intent.");
+                    finishProcessing();
                 }
             } catch (err) {
                 console.error("Submit error:", err);
-                showToast('error', 'Network Error', 'Could not reach the GARRO controller. Is it running?');
-            } finally {
-                btn.disabled = false;
-                btn.classList.remove('btn-loading');
-                btn.innerHTML = 'Submit Intent';
-                document.getElementById('weights-overlay').classList.remove('active');
+                finishProcessing();
             }
         });
 
