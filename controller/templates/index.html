@@ -47,7 +47,7 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            overflow: auto; /* Prevent body scroll */
+            overflow: hidden;
             font-size: 14px;
             -webkit-font-smoothing: antialiased;
         }
@@ -92,11 +92,11 @@
             box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
         }
 
-        /* ── Layout ── */
         .main-container {
             flex: 1;
             display: flex;
             height: calc(100vh - 64px);
+            overflow: auto;
         }
 
         .sidebar {
@@ -107,6 +107,7 @@
             flex-direction: column;
             background-color: var(--background);
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 24px;
             gap: 24px;
         }
@@ -118,7 +119,9 @@
             padding: 24px;
             display: flex;
             flex-direction: column;
-            overflow-y: auto;
+            gap: 24px;
+            overflow: hidden;
+            min-width: 0;
         }
 
         /* ── UI Components ── */
@@ -482,6 +485,37 @@
             word-break: break-all;
         }
 
+        /* ── Topology map header ── */
+        .map-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .map-title {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .map-title svg {
+            width: 15px;
+            height: 15px;
+            color: var(--muted-foreground);
+        }
+
+        .map-meta {
+            font-size: 12px;
+            color: var(--muted-foreground);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
         /* ── Vis.js Canvas ── */
         .canvas-container {
             flex: 1;
@@ -513,10 +547,6 @@
         }
 
         /* ── Analytics Dock ── */
-        .content {
-            gap: 24px;
-        }
-
         .analytics-dock {
             height: 250px;
             flex-shrink: 0;
@@ -700,6 +730,24 @@
 
         <!-- Main Content -->
         <main class="content">
+
+            <!-- Topology map header -->
+            <div class="map-header">
+                <div class="map-title">
+                    <svg fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                    </svg>
+                    Live Routing Topology
+                </div>
+                <div class="map-meta">
+                    <span id="map-node-count">—</span> nodes
+                    <span style="color: var(--border);">·</span>
+                    <span id="map-edge-count">—</span> links
+                    <span style="color: var(--border);">·</span>
+                    <span id="map-flow-count-badge">0 active flows</span>
+                </div>
+            </div>
+
             <div class="canvas-container">
                 <div id="empty-map-text" class="empty-state">Initializing Topology Map...</div>
                 <div id="mynetwork"></div>
@@ -929,14 +977,16 @@
             flowsCard.classList.add('flash-update');
         }
 
-        function finishProcessing() {
+        function finishProcessing(wasError = false) {
             isProcessing = false;
             clearTimeout(processingTimeout);
             document.getElementById('intent-wrapper').classList.remove('processing');
             document.getElementById('submit-btn').disabled = false;
             document.getElementById('btn-text').innerText = 'Submit Intent';
-            showToast("success", "AI Optimization Complete", "LLM parsed intent & dynamically re-routed paths.");
-            triggerFlashAnimations();
+            if (!wasError) {
+                showToast('success', 'AI Optimization Complete', 'LLM parsed intent & dynamically re-routed paths.');
+                triggerFlashAnimations();
+            }
         }
 
         function initNetwork() {
@@ -970,7 +1020,7 @@
 
                 if (isProcessing) {
                     const currentWeightsStr = JSON.stringify(w);
-                    if (currentWeightsStr !== previousWeightsStr) finishProcessing();
+                    if (currentWeightsStr !== previousWeightsStr) finishProcessing(false);
                 }
 
                 if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
@@ -1005,11 +1055,18 @@
                 const id = `edge_${e.src}_${e.dst}`;
                 if (!edgesDataset.get(id)) edgesDataset.add({ id, from: `s_${e.src}`, to: `s_${e.dst}`, color: { color: COLOR_LINK_INACTIVE } });
             });
+            // Update map meta
+            document.getElementById('map-node-count').innerText = nodes.length * 2; // switches + hosts
+            document.getElementById('map-edge-count').innerText = edges.length;
             if (network) network.fit();
         }
 
         function updateFlowsList(activePaths) {
             const container = document.getElementById('flow-list');
+            const flowCount = activePaths ? Object.keys(activePaths).length : 0;
+            const badge = document.getElementById('map-flow-count-badge');
+            if (badge) badge.innerText = flowCount === 0 ? 'no active flows' : `${flowCount} active flow${flowCount !== 1 ? 's' : ''}`;
+
             if (!activePaths || Object.keys(activePaths).length === 0) {
                 container.innerHTML = `<div class="text-muted">No flows detected. Ping hosts to initiate routing.</div>`;
                 return;
@@ -1065,7 +1122,11 @@
 
             // Fallback timeout in case LLM fails or weights are identical
             processingTimeout = setTimeout(() => {
-                if (isProcessing) finishProcessing();
+                if (isProcessing) {
+                    // Weights didn't change after 12 s — LLM likely failed silently
+                    showToast('error', 'LLM Timeout', 'No weight update received. The LLM may have failed — check network or API key (e.g. api.groq.com unreachable).', 8000);
+                    finishProcessing(true);
+                }
             }, 12000);
 
             try {
@@ -1078,11 +1139,22 @@
                 if (res.ok) {
                     input.value = "";
                 } else {
-                    showToast("Error", "Failed to submit intent.");
+                    let detail = `Server returned ${res.status}.`;
+                    try {
+                        const body = await res.json();
+                        if (body.error) detail = body.error;
+                    } catch (_) {}
+                    // Surface specific LLM connectivity errors
+                    if (res.status === 503 || res.status === 502) {
+                        detail = 'LLM service unreachable — possible DNS/network failure (e.g. api.groq.com). Check your connection.';
+                    }
+                    showToast('error', 'Intent Failed', detail, 7000);
                     finishProcessing();
                 }
             } catch (err) {
                 console.error("Submit error:", err);
+                // Network error reaching the local controller
+                showToast('error', 'Connection Error', 'Cannot reach the GARRO controller. Is it still running?', 7000);
                 finishProcessing();
             }
         });
