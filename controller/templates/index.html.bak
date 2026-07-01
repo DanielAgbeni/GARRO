@@ -7,8 +7,6 @@
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
     <style>
         :root {
             /* Shadcn Zinc Dark Theme */
@@ -118,7 +116,6 @@
             padding: 24px;
             display: flex;
             flex-direction: column;
-            overflow-y: auto;
         }
 
         /* ── UI Components ── */
@@ -490,7 +487,6 @@
             background-color: var(--card);
             position: relative;
             overflow: hidden;
-            min-height: 0;
         }
 
         #mynetwork {
@@ -510,96 +506,6 @@
             font-size: 14px;
             text-align: center;
             pointer-events: none;
-        }
-
-        /* ── Analytics Dock ── */
-        .content {
-            gap: 24px;
-        }
-
-        .analytics-dock {
-            height: 250px;
-            flex-shrink: 0;
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 16px;
-        }
-
-        .chart-card {
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            background-color: var(--card);
-            padding: 16px 20px;
-            display: flex;
-            flex-direction: column;
-            min-height: 0;
-            overflow: hidden;
-        }
-
-        .chart-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 4px;
-            flex-shrink: 0;
-        }
-
-        .chart-title {
-            font-size: 13px;
-            font-weight: 600;
-            letter-spacing: -0.01em;
-        }
-
-        .chart-subtitle {
-            font-size: 11px;
-            color: var(--muted-foreground);
-            margin-top: 2px;
-        }
-
-        .chart-stat {
-            text-align: right;
-        }
-
-        .chart-stat-value {
-            font-size: 20px;
-            font-weight: 700;
-            letter-spacing: -0.03em;
-            line-height: 1;
-        }
-
-        .chart-stat-label {
-            font-size: 10px;
-            color: var(--muted-foreground);
-            margin-top: 2px;
-        }
-
-        .chart-wrap {
-            flex: 1;
-            position: relative;
-            min-height: 0;
-        }
-
-        .chart-wrap canvas {
-            position: absolute;
-            inset: 0;
-        }
-
-        .intent-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 10px;
-            color: #a78bfa;
-            font-weight: 500;
-        }
-
-        .intent-badge::before {
-            content: '';
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background-color: #a78bfa;
-            flex-shrink: 0;
         }
     </style>
 </head>
@@ -704,55 +610,6 @@
                 <div id="empty-map-text" class="empty-state">Initializing Topology Map...</div>
                 <div id="mynetwork"></div>
             </div>
-
-            <!-- Analytics Dock -->
-            <div class="analytics-dock" id="panel-analytics">
-                
-                <!-- Chart: Simulated Per-Weight Performance -->
-                <div class="chart-card">
-                    <div class="chart-header">
-                        <div>
-                            <div class="chart-title">Weight vs. Performance</div>
-                            <div class="chart-subtitle">Latest α snapshot — radar view</div>
-                        </div>
-                        <div class="chart-stat">
-                            <div class="intent-badge" id="stat-active-intent-label">waiting</div>
-                        </div>
-                    </div>
-                    <div class="chart-wrap"><canvas id="chart-radar"></canvas></div>
-                </div>
-
-                <!-- Chart: Network Health Score -->
-                <div class="chart-card">
-                    <div class="chart-header">
-                        <div>
-                            <div class="chart-title">Network Health Score</div>
-                            <div class="chart-subtitle">Composite DRL reward signal (0–100)</div>
-                        </div>
-                        <div class="chart-stat">
-                            <div class="chart-stat-value" id="stat-health">—</div>
-                            <div class="chart-stat-label">current score</div>
-                        </div>
-                    </div>
-                    <div class="chart-wrap"><canvas id="chart-health"></canvas></div>
-                </div>
-
-                <!-- Chart: Active Flow Count -->
-                <div class="chart-card">
-                    <div class="chart-header">
-                        <div>
-                            <div class="chart-title">Active Flow Count</div>
-                            <div class="chart-subtitle">Concurrent PPO-routed flows</div>
-                        </div>
-                        <div class="chart-stat">
-                            <div class="chart-stat-value" id="stat-flows">0</div>
-                            <div class="chart-stat-label">active flows</div>
-                        </div>
-                    </div>
-                    <div class="chart-wrap"><canvas id="chart-flows"></canvas></div>
-                </div>
-
-            </div>
         </main>
     </div>
 
@@ -772,152 +629,7 @@
         const COLOR_LINK_ACTIVE = '#fafafa';
         const COLOR_TEXT = '#fafafa';
 
-        // Chart State
-        const MAX_SAMPLES = 40;
-        let chartHealth, chartFlows, chartRadar;
-        let chartHistory = {
-            labels: [], alpha1: [], alpha2: [], alpha3: [], alpha4: [], health: [], flowCount: [], intentMarkers: [], lastIntent: ''
-        };
-        const HEALTH_COLOR = '#a78bfa';
-        const FLOWS_COLOR = '#38bdf8';
-        let intentCount = 0;
 
-        function pushSample(w, flowCount, intent) {
-            const label = new Date().toTimeString().slice(0, 8);
-
-            if (intent && intent !== chartHistory.lastIntent) {
-                if (chartHistory.lastIntent !== '') {
-                    intentCount++;
-                    chartHistory.intentMarkers.push(chartHistory.labels.length);
-                }
-                chartHistory.lastIntent = intent;
-                const short = intent.length > 28 ? intent.slice(0, 28) + '…' : intent;
-                document.getElementById('stat-active-intent-label').innerText = short;
-            }
-
-            // Composite health score (0-100)
-            const health = Math.round(
-                (w.alpha1 || 0) * 30 +
-                (1 - (w.alpha2 || 0)) * 30 +
-                (1 - (w.alpha3 || 0)) * 20 +
-                (w.alpha4 || 0) * 20
-            );
-
-            chartHistory.labels.push(label);
-            chartHistory.alpha1.push(Math.round((w.alpha1 || 0) * 100));
-            chartHistory.alpha2.push(Math.round((w.alpha2 || 0) * 100));
-            chartHistory.alpha3.push(Math.round((w.alpha3 || 0) * 100));
-            chartHistory.alpha4.push(Math.round((w.alpha4 || 0) * 100));
-            chartHistory.health.push(health);
-            chartHistory.flowCount.push(flowCount);
-
-            if (chartHistory.labels.length > MAX_SAMPLES) {
-                ['labels','alpha1','alpha2','alpha3','alpha4','health','flowCount'].forEach(k => chartHistory[k].shift());
-                chartHistory.intentMarkers = chartHistory.intentMarkers.map(i => i - 1).filter(i => i >= 0);
-            }
-
-            document.getElementById('stat-health').innerText = health;
-            document.getElementById('stat-flows').innerText  = flowCount;
-            updateCharts();
-        }
-
-        function buildAnnotations() {
-            const out = {};
-            chartHistory.intentMarkers.forEach((idx, i) => {
-                out[`intent_${i}`] = {
-                    type: 'line', xMin: idx, xMax: idx,
-                    borderColor: 'rgba(167,139,250,0.55)',
-                    borderWidth: 1.5, borderDash: [4,3],
-                    label: { display: true, content: '↑ intent', color: '#a78bfa',
-                             backgroundColor: 'transparent', font: { size: 9 }, position: 'start', yAdjust: -4 }
-                };
-            });
-            return out;
-        }
-
-        function updateCharts() {
-            const ann = buildAnnotations();
-            if (chartHealth) {
-                chartHealth.data.labels = chartHistory.labels;
-                chartHealth.data.datasets[0].data = chartHistory.health;
-                chartHealth.options.plugins.annotation.annotations = ann;
-                chartHealth.update('none');
-            }
-            if (chartFlows) {
-                chartFlows.data.labels = chartHistory.labels;
-                chartFlows.data.datasets[0].data = chartHistory.flowCount;
-                chartFlows.options.plugins.annotation.annotations = ann;
-                chartFlows.update('none');
-            }
-            if (chartRadar && chartHistory.labels.length) {
-                const l = chartHistory.labels.length - 1;
-                chartRadar.data.datasets[0].data = [
-                    chartHistory.alpha1[l], chartHistory.alpha2[l], chartHistory.alpha3[l], chartHistory.alpha4[l]
-                ];
-                chartRadar.update('none');
-            }
-        }
-
-        const xAxis = () => ({ ticks: { maxTicksLimit: 6, color: '#52525b', maxRotation: 0 }, grid: { color: '#1c1c1f' } });
-        const yAxis = (max=100) => ({ min:0, max, ticks: { stepSize: max/4, color: '#52525b' }, grid: { color: '#1c1c1f' } });
-
-        const tooltipBase = {
-            backgroundColor: '#18181b', borderColor: '#27272a', borderWidth: 1,
-            titleColor: '#fafafa', bodyColor: '#a1a1aa', padding: 10
-        };
-
-        function initCharts() {
-            function lineChart(id, datasets, yMax=100) {
-                return new Chart(document.getElementById(id), {
-                    type: 'line',
-                    data: { labels: [], datasets },
-                    options: {
-                        responsive: true, maintainAspectRatio: false, animation: false,
-                        interaction: { mode: 'index', intersect: false },
-                        plugins: {
-                            legend: { display: true, position: 'bottom', labels: { boxWidth: 10, padding: 12, color: '#71717a' } },
-                            tooltip: tooltipBase,
-                            annotation: { annotations: {} }
-                        },
-                        scales: { x: xAxis(), y: yAxis(yMax) }
-                    }
-                });
-            }
-
-            const hCtx  = document.getElementById('chart-health').getContext('2d');
-            const hGrad = hCtx.createLinearGradient(0, 0, 0, 200);
-            hGrad.addColorStop(0, 'rgba(167,139,250,0.25)');
-            hGrad.addColorStop(1, 'rgba(167,139,250,0)');
-            chartHealth = lineChart('chart-health', [
-                { label: 'Health Score', data: [], borderColor: HEALTH_COLOR, backgroundColor: hGrad, fill:true, tension:0.4, borderWidth:2.5, pointRadius:0, pointHoverRadius:5 }
-            ]);
-
-            chartFlows = lineChart('chart-flows', [
-                { label: 'Active Flows', data: [], borderColor: FLOWS_COLOR, backgroundColor: 'rgba(56,189,248,0.1)', fill:true, tension:0.3, borderWidth:2, pointRadius:2, pointHoverRadius:5 }
-            ], 20);
-            chartFlows.options.scales.y.ticks.stepSize = 1;
-
-            chartRadar = new Chart(document.getElementById('chart-radar'), {
-                type: 'radar',
-                data: {
-                    labels: ['Throughput (α1)', 'Delay (α2)', 'Pkt Loss (α3)', 'Load Balance (α4)'],
-                    datasets: [{ label: 'Current Weights', data: [0,0,0,0],
-                        borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.15)',
-                        borderWidth: 2, pointBackgroundColor: '#a78bfa', pointRadius: 4 }]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false, animation: false,
-                    plugins: { legend: { display: false }, tooltip: { ...tooltipBase, callbacks: { label: c => ` ${c.raw}%` } } },
-                    scales: { r: {
-                        min:0, max:100,
-                        ticks: { display: false },
-                        grid: { color: '#27272a' },
-                        pointLabels: { color: '#a1a1aa', font: { size: 11 } },
-                        angleLines: { color: '#27272a' }
-                    }}
-                }
-            });
-        }
 
         function triggerFlashAnimations() {
             const weightsCard = document.getElementById('weights-card');
@@ -978,12 +690,9 @@
                     buildInitialTopology(state.nodes, state.edges);
                     knownEdgeCount = state.edges.length;
                 }
-                const flowCount = state.active_paths ? Object.keys(state.active_paths).length : 0;
                 updateFlowsList(state.active_paths);
                 highlightActivePaths(state.active_paths);
-                pushSample(w, flowCount, state.current_intent || '');
-            } catch (err) {
-                console.error("State fetch error:", err); }
+            } catch (err) { console.error("Telemetry fetch failed:", err); }
         }
 
         function updateProgress(id, val) {
@@ -1109,10 +818,9 @@
                 toast.addEventListener('animationend', () => toast.remove());
             }, duration);
         }
-        // ── Boot ──
+
         window.addEventListener('load', () => {
             initNetwork();
-            initCharts();
             fetchState();
             setInterval(fetchState, 1500);
         });
