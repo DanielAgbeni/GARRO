@@ -293,6 +293,7 @@
             flex-direction: column;
             height: 100%;
             position: relative;
+            overflow: hidden;
         }
 
         #mynetwork {
@@ -423,6 +424,7 @@
         let nodesDataset = new vis.DataSet([]);
         let edgesDataset = new vis.DataSet([]);
         let isTopologyBuilt = false;
+        let knownEdgeCount = 0;
         let lastIntent = "";
 
         // Initialize Vis.js network mapping
@@ -497,9 +499,15 @@
                 updateProgressBar('alpha3', alpha3);
                 updateProgressBar('alpha4', alpha4);
 
-                // 3. Build Topology if not done
-                if (!isTopologyBuilt && state.nodes && state.nodes.length > 0) {
+                // 3. Build/Rebuild Topology if new edges are discovered (handles LLDP delay)
+                if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
                     buildInitialTopology(state.nodes, state.edges);
+                    knownEdgeCount = state.edges.length;
+                    
+                    // Force the physics engine to stabilize and center the map
+                    if (network) {
+                        network.fit();
+                    }
                 }
 
                 // 4. Update Active Flows UI Panel
@@ -705,6 +713,9 @@
 
                 if (response.ok) {
                     inputEl.value = "";
+                    document.getElementById('submit-btn').disabled = false;
+                    document.getElementById('btn-spinner').style.display = 'none';
+                    document.getElementById('btn-text').innerText = 'Submit Intent';
                 } else {
                     alert("Failed to submit intent to controller.");
                     document.getElementById('submit-btn').disabled = false;
