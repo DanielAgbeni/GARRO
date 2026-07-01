@@ -209,6 +209,199 @@
             line-height: 1.5;
         }
 
+        /* ── Loading State ── */
+        .btn-loading {
+            gap: 8px;
+            background-color: var(--secondary) !important;
+            color: var(--muted-foreground) !important;
+        }
+
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid transparent;
+            border-top-color: var(--muted-foreground);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Pulsing dots text animation */
+        .loading-dots::after {
+            content: '';
+            animation: dots 1.4s steps(4, end) infinite;
+        }
+
+        @keyframes dots {
+            0%   { content: ''; }
+            25%  { content: '.'; }
+            50%  { content: '..'; }
+            75%  { content: '...'; }
+            100% { content: ''; }
+        }
+
+        /* ── Toast Notifications ── */
+        #toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .toast {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            background-color: #18181b;
+            font-size: 13px;
+            color: var(--foreground);
+            max-width: 320px;
+            pointer-events: auto;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+            animation: toast-in 0.2s ease forwards;
+        }
+
+        .toast.toast-exit {
+            animation: toast-out 0.2s ease forwards;
+        }
+
+        .toast-icon {
+            font-size: 15px;
+            line-height: 1.4;
+            flex-shrink: 0;
+        }
+
+        .toast-body { flex: 1; }
+        .toast-title { font-weight: 600; margin-bottom: 2px; }
+        .toast-msg { color: var(--muted-foreground); line-height: 1.4; }
+
+        .toast-success { border-color: #166534; }
+        .toast-success .toast-icon { color: #22c55e; }
+
+        .toast-error { border-color: #7f1d1d; }
+        .toast-error .toast-icon { color: #f87171; }
+
+        .toast-info { border-color: #1e3a5f; }
+        .toast-info .toast-icon { color: #60a5fa; }
+
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(8px) scale(0.97); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes toast-out {
+            from { opacity: 1; transform: translateY(0) scale(1); }
+            to   { opacity: 0; transform: translateY(8px) scale(0.97); }
+        }
+
+        /* ── Tooltips ── */
+        .tooltip-wrap {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            cursor: default;
+        }
+
+        .tooltip-icon {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background-color: var(--secondary);
+            border: 1px solid var(--border);
+            color: var(--muted-foreground);
+            font-size: 9px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+            cursor: help;
+            flex-shrink: 0;
+        }
+
+        .tooltip-bubble {
+            display: none;
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #18181b;
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 8px 10px;
+            font-size: 11px;
+            color: var(--muted-foreground);
+            white-space: normal;
+            width: 200px;
+            line-height: 1.5;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .tooltip-bubble::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border: 5px solid transparent;
+            border-top-color: var(--border);
+        }
+
+        .tooltip-wrap:hover .tooltip-bubble {
+            display: block;
+        }
+
+        /* ── Intent processing overlay on weights card ── */
+        .weights-card-inner {
+            position: relative;
+        }
+
+        .weights-overlay {
+            display: none;
+            position: absolute;
+            inset: 0;
+            background-color: rgba(9, 9, 11, 0.75);
+            border-radius: calc(var(--radius) - 2px);
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 10;
+            backdrop-filter: blur(2px);
+        }
+
+        .weights-overlay.active {
+            display: flex;
+        }
+
+        .weights-overlay-text {
+            font-size: 12px;
+            color: var(--muted-foreground);
+        }
+
+        .spinner-lg {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--border);
+            border-top-color: var(--foreground);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
         /* ── Progress Bars ── */
         .progress-group {
             display: flex;
@@ -311,6 +504,9 @@
         </div>
     </header>
 
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
     <div class="main-container">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -331,34 +527,65 @@
 
             <div class="card">
                 <div class="card-title">DRL Reward Weights</div>
-                <div class="progress-group">
-                    <div class="progress-item">
-                        <div class="progress-header">
-                            <span>Throughput (α1)</span>
-                            <span class="progress-val" id="val-alpha1">0%</span>
-                        </div>
-                        <div class="progress-track"><div class="progress-fill" id="fill-alpha1" style="width: 0%"></div></div>
+                <div class="weights-card-inner">
+                    <!-- Overlay shown while LLM is processing -->
+                    <div class="weights-overlay" id="weights-overlay">
+                        <div class="spinner-lg"></div>
+                        <div class="weights-overlay-text">Recalculating weights<span class="loading-dots"></span></div>
                     </div>
-                    <div class="progress-item">
-                        <div class="progress-header">
-                            <span>Delay (α2)</span>
-                            <span class="progress-val" id="val-alpha2">0%</span>
+                    <div class="progress-group">
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="tooltip-wrap">
+                                    Throughput (α1)
+                                    <span class="tooltip-icon">?</span>
+                                    <div class="tooltip-bubble">
+                                        Controls how much the agent rewards maximizing total data transferred across the network. Higher α1 = prefer routes with the most bandwidth.
+                                    </div>
+                                </span>
+                                <span class="progress-val" id="val-alpha1">0%</span>
+                            </div>
+                            <div class="progress-track"><div class="progress-fill" id="fill-alpha1" style="width: 0%"></div></div>
                         </div>
-                        <div class="progress-track"><div class="progress-fill" id="fill-alpha2" style="width: 0%"></div></div>
-                    </div>
-                    <div class="progress-item">
-                        <div class="progress-header">
-                            <span>Packet Loss (α3)</span>
-                            <span class="progress-val" id="val-alpha3">0%</span>
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="tooltip-wrap">
+                                    Delay (α2)
+                                    <span class="tooltip-icon">?</span>
+                                    <div class="tooltip-bubble">
+                                        Controls how much the agent penalizes end-to-end packet latency. Higher α2 = prefer the lowest-latency paths.
+                                    </div>
+                                </span>
+                                <span class="progress-val" id="val-alpha2">0%</span>
+                            </div>
+                            <div class="progress-track"><div class="progress-fill" id="fill-alpha2" style="width: 0%"></div></div>
                         </div>
-                        <div class="progress-track"><div class="progress-fill" id="fill-alpha3" style="width: 0%"></div></div>
-                    </div>
-                    <div class="progress-item">
-                        <div class="progress-header">
-                            <span>Load Balance (α4)</span>
-                            <span class="progress-val" id="val-alpha4">0%</span>
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="tooltip-wrap">
+                                    Packet Loss (α3)
+                                    <span class="tooltip-icon">?</span>
+                                    <div class="tooltip-bubble">
+                                        Controls how much the agent penalizes dropped packets. Higher α3 = avoid congested or unreliable links.
+                                    </div>
+                                </span>
+                                <span class="progress-val" id="val-alpha3">0%</span>
+                            </div>
+                            <div class="progress-track"><div class="progress-fill" id="fill-alpha3" style="width: 0%"></div></div>
                         </div>
-                        <div class="progress-track"><div class="progress-fill" id="fill-alpha4" style="width: 0%"></div></div>
+                        <div class="progress-item">
+                            <div class="progress-header">
+                                <span class="tooltip-wrap">
+                                    Load Balance (α4)
+                                    <span class="tooltip-icon">?</span>
+                                    <div class="tooltip-bubble">
+                                        Controls how much the agent rewards distributing traffic evenly across all links. Higher α4 = avoid hotspots and overloaded paths.
+                                    </div>
+                                </span>
+                                <span class="progress-val" id="val-alpha4">0%</span>
+                            </div>
+                            <div class="progress-track"><div class="progress-fill" id="fill-alpha4" style="width: 0%"></div></div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -594,8 +821,13 @@
             const text = input.value.trim();
             if (!text) return;
 
+            // — Loading state —
             btn.disabled = true;
-            btn.innerText = "Processing LLM...";
+            btn.classList.add('btn-loading');
+            btn.innerHTML = `<div class="spinner"></div><span class="loading-dots">Thinking</span>`;
+
+            // Show overlay on weights card
+            document.getElementById('weights-overlay').classList.add('active');
 
             try {
                 const res = await fetch('/garro/intent', {
@@ -606,16 +838,48 @@
 
                 if (res.ok) {
                     input.value = "";
+                    showToast('success', 'Intent Applied', 'The LLM has updated the routing objective and reward weights.');
                 } else {
-                    alert("Submission failed.");
+                    let detail = `Server returned ${res.status}`;
+                    try {
+                        const body = await res.json();
+                        if (body.error) detail = body.error;
+                    } catch (_) {}
+                    showToast('error', 'Submission Failed', detail);
                 }
             } catch (err) {
                 console.error("Submit error:", err);
+                showToast('error', 'Network Error', 'Could not reach the GARRO controller. Is it running?');
             } finally {
                 btn.disabled = false;
-                btn.innerText = "Submit Intent";
+                btn.classList.remove('btn-loading');
+                btn.innerHTML = 'Submit Intent';
+                document.getElementById('weights-overlay').classList.remove('active');
             }
         });
+
+        // ── Toast helper ──
+        function showToast(type, title, message, duration = 4000) {
+            const icons = { success: '✓', error: '✕', info: 'i' };
+            const container = document.getElementById('toast-container');
+
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.innerHTML = `
+                <div class="toast-icon">${icons[type] || 'i'}</div>
+                <div class="toast-body">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-msg">${message}</div>
+                </div>
+            `;
+
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.add('toast-exit');
+                toast.addEventListener('animationend', () => toast.remove());
+            }, duration);
+        }
 
         window.addEventListener('load', () => {
             initNetwork();
