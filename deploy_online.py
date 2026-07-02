@@ -106,13 +106,15 @@ async def install_flow(
 async def _intent_loop(
     llm: LLMOrchestrator,
     config: dict,
-    interval_s: float = 1.5,
+    interval_s: float = 5.0,
 ) -> None:
     """
     Background task:
     1. Periodically polls /garro/intent from the controller.
     2. If changed, parses via LLM, updates config, and POSTs new weights to /garro/weights.
-    3. Concurrently reads stdin and POSTs typed intents to /garro/intent on the controller.
+    3. Reports processing status back to the controller so the dashboard
+       can show accurate feedback (pending → processing → success / error).
+    4. Concurrently reads stdin and POSTs typed intents to /garro/intent on the controller.
     """
     default_intent = (
         "Balance load across all links while maintaining "
@@ -120,6 +122,23 @@ async def _intent_loop(
     )
     last_processed_intent = ""
     loop = asyncio.get_event_loop()
+
+    async def _report_status(
+        session: aiohttp.ClientSession,
+        status: str,
+        message: str = "",
+    ) -> None:
+        """POST intent processing status back to the controller."""
+        try:
+            async with session.post(
+                f"{CONTROLLER_URL}/garro/intent_status",
+                json={"status": status, "message": message},
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[Deploy/LLM] Failed to report status '{status}': {resp.status}")
+        except Exception as exc:
+            print(f"[Deploy/LLM] Status report error: {exc}")
 
     # Helper task to read stdin and POST to controller
     async def stdin_reader():
@@ -186,19 +205,38 @@ async def _intent_loop(
                 if current_intent and current_intent != last_processed_intent:
                     print(f"[Deploy/LLM] New intent detected: '{current_intent}'")
                     print("[Deploy/LLM] Parsing intent & re-optimizing weights via LLM...")
-                    
-                    weights = await llm.parse_intent(current_intent)
-                    weights.apply_to_config(config)
-                    print(f"[Deploy/LLM] Weights successfully updated → {weights.as_dict()}")
 
-                    # Sync weights back to controller for Dashboard display
-                    async with session.post(
-                        f"{CONTROLLER_URL}/garro/weights",
-                        json={"weights": weights.as_dict()},
-                        timeout=aiohttp.ClientTimeout(total=3),
-                    ) as w_resp:
-                        if w_resp.status != 200:
-                            print(f"[Deploy/LLM] Failed to sync weights to dashboard: {w_resp.status}")
+                    # Tell the controller (and thus the UI) that processing has started
+                    await _report_status(session, "processing")
+
+                    try:
+                        weights = await llm.parse_intent(
+                            current_intent, raise_on_error=True,
+                        )
+
+                        # Check if the LLM actually returned new weights or fell back
+                        # by inspecting whether parse_intent printed a fallback message.
+                        # The orchestrator returns _current_weights on failure, but we
+                        # need to distinguish success from fallback.  We do this by
+                        # calling the provider directly and catching errors here.
+                        weights.apply_to_config(config)
+                        print(f"[Deploy/LLM] Weights successfully updated → {weights.as_dict()}")
+
+                        # Sync weights back to controller for Dashboard display
+                        async with session.post(
+                            f"{CONTROLLER_URL}/garro/weights",
+                            json={"weights": weights.as_dict()},
+                            timeout=aiohttp.ClientTimeout(total=3),
+                        ) as w_resp:
+                            if w_resp.status != 200:
+                                print(f"[Deploy/LLM] Failed to sync weights to dashboard: {w_resp.status}")
+
+                        await _report_status(session, "success")
+
+                    except Exception as llm_exc:
+                        error_msg = str(llm_exc)
+                        print(f"[Deploy/LLM] LLM processing failed: {error_msg}")
+                        await _report_status(session, "error", error_msg)
 
                     last_processed_intent = current_intent
 
@@ -280,7 +318,7 @@ async def main(args):
 
     # ── Launch background LLM intent task ─────────────────────────────────
     intent_task = asyncio.create_task(
-        _intent_loop(llm, config, interval_s=60.0)
+        _intent_loop(llm, config, interval_s=5.0)
     )
 
     # ── Main async loop ───────────────────────────────────────────────────

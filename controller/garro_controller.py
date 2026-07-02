@@ -58,9 +58,29 @@ def manage_intent():
         intent = body.get("intent", "").strip()
         if intent:
             controller_instance.current_intent = intent
+            controller_instance.intent_status = "pending"
+            controller_instance.intent_error = ""
             return jsonify({"status": "ok", "intent": intent})
         return jsonify({"error": "Missing intent parameter"}), 400
     return jsonify({"intent": controller_instance.current_intent})
+
+
+@app.route("/garro/intent_status", methods=["GET", "POST"])
+def manage_intent_status():
+    if controller_instance is None:
+        return jsonify({"error": "Controller not initialized"}), 503
+    if request.method == "POST":
+        body = request.get_json(force=True, silent=True) or {}
+        status = body.get("status", "").strip()
+        if status in ("pending", "processing", "success", "error"):
+            controller_instance.intent_status = status
+            controller_instance.intent_error = body.get("message", "")
+            return jsonify({"status": "ok", "intent_status": status})
+        return jsonify({"error": "Invalid status value"}), 400
+    return jsonify({
+        "intent_status": controller_instance.intent_status,
+        "intent_error": controller_instance.intent_error,
+    })
 
 
 @app.route("/garro/weights", methods=["GET", "POST"])
@@ -130,6 +150,8 @@ class GARROController(app_manager.OSKenApp):
         self.active_paths: dict = {}        # "src_ip->dst_ip" -> dpid list
         self.current_intent: str = "Balance load across all links while maintaining reasonable latency for mixed traffic."
         self.current_weights: dict = {"alpha1": 0.4, "alpha2": 0.3, "alpha3": 0.2, "alpha4": 0.1}
+        self.intent_status: str = "success"   # pending | processing | success | error
+        self.intent_error: str = ""
 
         # Tracks (dpid, src_mac) pairs that have already been flooded this
         # cycle. Cleared every 30s (matching flow idle_timeout) so hosts can
@@ -415,4 +437,6 @@ class GARROController(app_manager.OSKenApp):
             "active_paths": self.active_paths,
             "current_intent": self.current_intent,
             "current_weights": self.current_weights,
+            "intent_status": self.intent_status,
+            "intent_error": self.intent_error,
         }

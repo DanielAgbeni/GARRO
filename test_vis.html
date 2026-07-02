@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+    <script>
+        let ds = new vis.DataSet([{id: 1, label: 'test'}]);
+        if (typeof ds.forEach === 'function') {
+            console.log('has forEach');
+        } else {
+            console.log('no forEach');
+        }
+    </script>
+</body>
+</html>

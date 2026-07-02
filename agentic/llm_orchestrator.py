@@ -174,10 +174,19 @@ class LLMOrchestrator:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def parse_intent(self, operator_intent: str) -> RewardWeights:
+    async def parse_intent(
+        self, operator_intent: str, *, raise_on_error: bool = False,
+    ) -> RewardWeights:
         """
         Async: Parse a natural-language intent → RewardWeights.
         Falls back to last-known-good weights on any error.
+
+        Parameters
+        ----------
+        raise_on_error : bool
+            If True, re-raises the exception after logging so the caller
+            can handle it (e.g. report an error status to the UI).
+            If False (default), silently returns fallback weights.
         """
         try:
             handler = self._PROVIDER_REGISTRY[self.provider]
@@ -190,6 +199,8 @@ class LLMOrchestrator:
             print(f"[LLM:{self.provider}] API call failed — {exc}")
             print(f"[LLM] Falling back to previous weights: "
                   f"{self._current_weights.as_dict()}")
+            if raise_on_error:
+                raise
             return self._current_weights
 
     def parse_intent_sync(self, operator_intent: str) -> RewardWeights:

@@ -34,6 +34,26 @@
             --radius: 0.5rem;
         }
 
+        [data-theme="light"] {
+            --background: #ffffff;
+            --foreground: #09090b;
+            --card: #ffffff;
+            --card-foreground: #09090b;
+            --popover: #ffffff;
+            --popover-foreground: #09090b;
+            --primary: #18181b;
+            --primary-foreground: #fafafa;
+            --secondary: #f4f4f5;
+            --secondary-foreground: #18181b;
+            --muted: #f4f4f5;
+            --muted-foreground: #71717a;
+            --accent: #f4f4f5;
+            --accent-foreground: #18181b;
+            --border: #e4e4e7;
+            --input: #e4e4e7;
+            --ring: #a1a1aa;
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
@@ -61,6 +81,7 @@
             align-items: center;
             border-bottom: 1px solid var(--border);
             background-color: var(--background);
+            transition: background-color 0.3s, border-color 0.3s;
         }
 
         .logo {
@@ -106,6 +127,7 @@
             display: flex;
             flex-direction: column;
             background-color: var(--background);
+            transition: background-color 0.3s, border-color 0.3s;
             overflow-y: auto;
             padding: 24px;
             gap: 24px;
@@ -115,6 +137,7 @@
             flex: 1;
             position: relative;
             background-color: var(--background);
+            transition: background-color 0.3s;
             padding: 24px;
             display: flex;
             flex-direction: column;
@@ -127,6 +150,7 @@
             border-radius: var(--radius);
             background-color: var(--card);
             color: var(--card-foreground);
+            transition: background-color 0.3s, border-color 0.3s, color 0.3s;
             padding: 20px;
         }
 
@@ -187,7 +211,26 @@
         }
 
         .btn-primary:hover {
-            background-color: #e4e4e7;
+            opacity: 0.9;
+        }
+
+        .btn-secondary {
+            background-color: transparent;
+            color: var(--foreground);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background-color: var(--secondary);
+        }
+
+        .theme-toggle {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            border-radius: 50%;
+            margin-top: 0;
+            font-size: 16px;
         }
 
         .btn:disabled {
@@ -610,8 +653,11 @@
             GARRO 
             <span class="badge">AI Controller</span>
         </div>
-        <div style="font-size: 13px; color: var(--muted-foreground); display: flex; align-items: center;">
-            <div class="status-dot"></div> Live Network Emulation
+        <div style="font-size: 13px; color: var(--muted-foreground); display: flex; align-items: center; gap: 16px;">
+            <button id="theme-toggle" class="btn btn-secondary theme-toggle" title="Toggle Light/Dark Mode">☀️</button>
+            <div style="display: flex; align-items: center;">
+                <div class="status-dot"></div> Live Network Emulation
+            </div>
         </div>
     </header>
 
@@ -762,15 +808,95 @@
         let edgesDataset = new vis.DataSet([]);
         let knownEdgeCount = 0;
         let isProcessing = false;
-        let previousWeightsStr = "";
         let processingTimeout = null;
 
-        const COLOR_NODE = '#27272a';
-        const COLOR_NODE_BORDER = '#71717a';
-        const COLOR_HOST = '#09090b';
-        const COLOR_LINK_INACTIVE = '#3f3f46';
-        const COLOR_LINK_ACTIVE = '#fafafa';
-        const COLOR_TEXT = '#fafafa';
+        // Theme management
+        const html = document.documentElement;
+        const themeToggle = document.getElementById('theme-toggle');
+        
+        function applyTheme(theme) {
+            if (theme === 'light') {
+                html.setAttribute('data-theme', 'light');
+                themeToggle.innerText = '🌙';
+            } else {
+                html.removeAttribute('data-theme');
+                themeToggle.innerText = '☀️';
+            }
+            // Update chart defaults
+            const isLight = theme === 'light';
+            Chart.defaults.color = isLight ? '#71717a' : '#a1a1aa';
+            Chart.defaults.borderColor = isLight ? '#e4e4e7' : '#27272a';
+            
+            if (chartHealth || chartFlows || chartRadar) {
+                updateCharts();
+                if (chartHealth) {
+                    chartHealth.options.scales.x.grid.color = isLight ? '#f4f4f5' : '#1c1c1f';
+                    chartHealth.options.scales.y.grid.color = isLight ? '#f4f4f5' : '#1c1c1f';
+                    chartHealth.options.scales.x.ticks.color = isLight ? '#71717a' : '#52525b';
+                    chartHealth.options.scales.y.ticks.color = isLight ? '#71717a' : '#52525b';
+                }
+                if (chartFlows) {
+                    chartFlows.options.scales.x.grid.color = isLight ? '#f4f4f5' : '#1c1c1f';
+                    chartFlows.options.scales.y.grid.color = isLight ? '#f4f4f5' : '#1c1c1f';
+                    chartFlows.options.scales.x.ticks.color = isLight ? '#71717a' : '#52525b';
+                    chartFlows.options.scales.y.ticks.color = isLight ? '#71717a' : '#52525b';
+                }
+                if (chartRadar) {
+                    chartRadar.options.scales.r.grid.color = isLight ? '#e4e4e7' : '#27272a';
+                    chartRadar.options.scales.r.angleLines.color = isLight ? '#e4e4e7' : '#27272a';
+                }
+                [chartHealth, chartFlows, chartRadar].forEach(c => {
+                    if(c) {
+                        c.options.plugins.tooltip.backgroundColor = isLight ? '#ffffff' : '#18181b';
+                        c.options.plugins.tooltip.borderColor = isLight ? '#e4e4e7' : '#27272a';
+                        c.options.plugins.tooltip.titleColor = isLight ? '#09090b' : '#fafafa';
+                        c.options.plugins.tooltip.bodyColor = isLight ? '#71717a' : '#a1a1aa';
+                        c.update('none');
+                    }
+                });
+            }
+
+            // Update Network map colors
+            COLOR_NODE = isLight ? '#ffffff' : '#27272a';
+            COLOR_NODE_BORDER = isLight ? '#a1a1aa' : '#71717a';
+            COLOR_HOST = isLight ? '#f4f4f5' : '#09090b';
+            COLOR_LINK_INACTIVE = isLight ? '#d4d4d8' : '#3f3f46';
+            COLOR_LINK_ACTIVE = isLight ? '#18181b' : '#fafafa';
+            COLOR_TEXT = isLight ? '#09090b' : '#fafafa';
+            
+            if (network) {
+                // Redraw all nodes and edges with new colors
+                nodesDataset.forEach(n => {
+                    const isHost = n.id.startsWith('h_');
+                    nodesDataset.update({ id: n.id, color: { background: isHost ? COLOR_HOST : COLOR_NODE, border: COLOR_NODE_BORDER }, font: { color: COLOR_TEXT } });
+                });
+                edgesDataset.forEach(e => {
+                    const isHost = e.id.startsWith('link_h_');
+                    const isActive = e.width === 3;
+                    edgesDataset.update({ id: e.id, color: { color: isActive ? COLOR_LINK_ACTIVE : COLOR_LINK_INACTIVE } });
+                });
+            }
+        }
+
+        themeToggle.addEventListener('click', () => {
+            const currentTheme = html.getAttribute('data-theme') || 'dark';
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('garro_theme', newTheme);
+            applyTheme(newTheme);
+        });
+
+        // Initialize theme
+        const savedTheme = localStorage.getItem('garro_theme') || 'dark';
+        
+        let COLOR_NODE = '#27272a';
+        let COLOR_NODE_BORDER = '#71717a';
+        let COLOR_HOST = '#09090b';
+        let COLOR_LINK_INACTIVE = '#3f3f46';
+        let COLOR_LINK_ACTIVE = '#fafafa';
+        let COLOR_TEXT = '#fafafa';
+
+        // Apply theme immediately to prevent flash
+        applyTheme(savedTheme);
 
         // Chart State
         const MAX_SAMPLES = 40;
@@ -862,8 +988,7 @@
         const yAxis = (max=100) => ({ min:0, max, ticks: { stepSize: max/4, color: '#52525b' }, grid: { color: '#1c1c1f' } });
 
         const tooltipBase = {
-            backgroundColor: '#18181b', borderColor: '#27272a', borderWidth: 1,
-            titleColor: '#fafafa', bodyColor: '#a1a1aa', padding: 10
+            borderWidth: 1, padding: 10
         };
 
         function initCharts() {
@@ -911,9 +1036,7 @@
                     scales: { r: {
                         min:0, max:100,
                         ticks: { display: false },
-                        grid: { color: '#27272a' },
-                        pointLabels: { color: '#a1a1aa', font: { size: 11 } },
-                        angleLines: { color: '#27272a' }
+                        pointLabels: { font: { size: 11 } }
                     }}
                 }
             });
@@ -929,7 +1052,7 @@
             flowsCard.classList.add('flash-update');
         }
 
-        function finishProcessing() {
+        function finishProcessingSuccess() {
             isProcessing = false;
             clearTimeout(processingTimeout);
             document.getElementById('intent-wrapper').classList.remove('processing');
@@ -937,6 +1060,25 @@
             document.getElementById('btn-text').innerText = 'Submit Intent';
             showToast("success", "AI Optimization Complete", "LLM parsed intent & dynamically re-routed paths.");
             triggerFlashAnimations();
+        }
+
+        function finishProcessingError(errorMsg) {
+            isProcessing = false;
+            clearTimeout(processingTimeout);
+            document.getElementById('intent-wrapper').classList.remove('processing');
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('btn-text').innerText = 'Submit Intent';
+            const detail = errorMsg ? errorMsg : 'Unknown error';
+            showToast("error", "Intent Processing Failed", `LLM could not parse intent: ${detail}. Weights unchanged.`);
+        }
+
+        function finishProcessingTimeout() {
+            isProcessing = false;
+            clearTimeout(processingTimeout);
+            document.getElementById('intent-wrapper').classList.remove('processing');
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('btn-text').innerText = 'Submit Intent';
+            showToast("info", "Processing Timeout", "The LLM took too long to respond. Check the deploy logs for details.");
         }
 
         function initNetwork() {
@@ -968,9 +1110,14 @@
                 updateProgress('alpha3', w.alpha3 || 0);
                 updateProgress('alpha4', w.alpha4 || 0);
 
-                if (isProcessing) {
-                    const currentWeightsStr = JSON.stringify(w);
-                    if (currentWeightsStr !== previousWeightsStr) finishProcessing();
+                // Check intent processing status from the backend
+                if (isProcessing && state.intent_status) {
+                    if (state.intent_status === 'success') {
+                        finishProcessingSuccess();
+                    } else if (state.intent_status === 'error') {
+                        finishProcessingError(state.intent_error || '');
+                    }
+                    // 'pending' and 'processing' — keep the animation running
                 }
 
                 if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
@@ -1056,17 +1203,12 @@
             btn.disabled = true;
             document.getElementById('btn-text').innerText = "LLM computing weights...";
 
-            // Snapshot current weights to detect change
-            try {
-                const res = await fetch('/garro/state?t=' + new Date().getTime());
-                const state = await res.json();
-                previousWeightsStr = JSON.stringify(state.current_weights || {});
-            } catch (e) {}
-
-            // Fallback timeout in case LLM fails or weights are identical
+            // Safety timeout — if the backend never reports success/error
+            // (e.g. deploy_online is not running), show a warning instead of
+            // a false success
             processingTimeout = setTimeout(() => {
-                if (isProcessing) finishProcessing();
-            }, 12000);
+                if (isProcessing) finishProcessingTimeout();
+            }, 30000);
 
             try {
                 const res = await fetch('/garro/intent', {
@@ -1077,13 +1219,14 @@
 
                 if (res.ok) {
                     input.value = "";
+                    showToast("info", "Intent Submitted", "Waiting for the AI agent to process...");
                 } else {
-                    showToast("Error", "Failed to submit intent.");
-                    finishProcessing();
+                    showToast("error", "Submission Failed", "Controller rejected the intent.");
+                    finishProcessingError('Controller rejected the intent');
                 }
             } catch (err) {
                 console.error("Submit error:", err);
-                finishProcessing();
+                finishProcessingError('Could not reach the controller');
             }
         });
 
