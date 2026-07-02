@@ -996,8 +996,49 @@ class PPOAgent:
     def load(self, path: str):
         """Load encoder + actor-critic weights, optimizers, and scaler from a .pt checkpoint."""
         ckpt = torch.load(path, map_location=self.device)
-        self.encoder.load_state_dict(ckpt["encoder"])
-        self.ac_net.load_state_dict(ckpt["ac_net"])
+
+        def _match_keys(model, state_dict):
+            model_keys = set(model.state_dict().keys())
+            ckpt_keys = set(state_dict.keys())
+            
+            # Common prefixes added by torch.compile (_orig_mod.) or nn.DataParallel (module.)
+            prefixes = ("_orig_mod.", "module.")
+            
+            # Find what prefix the target model uses
+            model_prefix = None
+            for p in prefixes:
+                if any(k.startswith(p) for k in model_keys):
+                    model_prefix = p
+                    break
+            
+            # Find what prefix the checkpoint uses
+            ckpt_prefix = None
+            for p in prefixes:
+                if any(k.startswith(p) for k in ckpt_keys):
+                    ckpt_prefix = p
+                    break
+            
+            if model_prefix == ckpt_prefix:
+                return state_dict
+                
+            # If checkpoint has a prefix that model doesn't, strip it
+            new_sd = state_dict
+            if ckpt_prefix:
+                new_sd = {}
+                for k, v in state_dict.items():
+                    if k.startswith(ckpt_prefix):
+                        new_sd[k[len(ckpt_prefix):]] = v
+                    else:
+                        new_sd[k] = v
+            
+            # If model expects a prefix that checkpoint doesn't have, prepend it
+            if model_prefix:
+                new_sd = {model_prefix + k: v for k, v in new_sd.items()}
+                
+            return new_sd
+
+        self.encoder.load_state_dict(_match_keys(self.encoder, ckpt["encoder"]))
+        self.ac_net.load_state_dict(_match_keys(self.ac_net, ckpt["ac_net"]))
 
         # Load optimizer and scaler states if they exist in the checkpoint
         if "opt_encoder" in ckpt:

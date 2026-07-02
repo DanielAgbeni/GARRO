@@ -257,8 +257,9 @@ async def main(args):
             if src == dst:
                 continue
             try:
-                paths = list(nx.shortest_simple_paths(G, src, dst, weight="delay"))
-                all_paths[(src, dst)] = paths[:k_paths]
+                from itertools import islice
+                paths_gen = nx.shortest_simple_paths(G, src, dst, weight="delay")
+                all_paths[(src, dst)] = list(islice(paths_gen, k_paths))
             except nx.NetworkXNoPath:
                 all_paths[(src, dst)] = []
     print(f"[Deploy] Pre-computed paths for {len(all_paths)} node pairs")
