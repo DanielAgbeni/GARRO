@@ -895,9 +895,6 @@
         let COLOR_LINK_ACTIVE = '#fafafa';
         let COLOR_TEXT = '#fafafa';
 
-        // Apply theme immediately to prevent flash
-        applyTheme(savedTheme);
-
         // Chart State
         const MAX_SAMPLES = 40;
         let chartHealth, chartFlows, chartRadar;
@@ -907,6 +904,9 @@
         const HEALTH_COLOR = '#a78bfa';
         const FLOWS_COLOR = '#38bdf8';
         let intentCount = 0;
+
+        // Apply theme immediately to prevent flash
+        applyTheme(savedTheme);
 
         function pushSample(w, flowCount, intent) {
             const label = new Date().toTimeString().slice(0, 8);
