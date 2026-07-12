@@ -580,10 +580,18 @@ Running Mininet and Open vSwitch (OVS) requires root permissions (`sudo`) and sy
 You will need **three separate terminal sessions** to execute the loop.
 
 #### 1. Terminal A: Start the OS-Ken Controller
-Activate the environment and start the OpenFlow controller app.
+Activate the environment and start the OpenFlow controller app. You can use either of the following commands (Option 2 is recommended if the standard command does not work):
+
+**Option 1: Standard Command**
 ```bash
 source garro_env/bin/activate
 osken-manager controller/garro_controller.py --observe-links
+```
+
+**Option 2: Explicit Python3 Script Command**
+```bash
+source garro_env/bin/activate
+python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links
 ```
 
 #### 2. Terminal B: Launch the Mininet Topology (Requires Sudo)

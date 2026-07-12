@@ -1100,6 +1100,10 @@ Run with:
     osken-manager controller/garro_controller.py \
         --observe-links \
         --wsapi-port 8080
+    OR:
+    python3 /usr/bin/osken-manager controller/garro_controller.py \
+        --observe-links \
+        --wsapi-port 8080
 """
 from os_ken.base import app_manager
 from os_ken.controller import ofp_event
@@ -2172,7 +2176,14 @@ python evaluate.py \
 # ── 3. Phase 2: Live Emulation (requires two separate terminals) ──────────
 
 # Terminal A: Start OS-Ken controller
+# Option 1 (Standard):
 osken-manager controller/garro_controller.py \
+    --observe-links \
+    --wsapi-port 8080 \
+    --ofp-tcp-listen-port 6633
+
+# Option 2 (Explicit Python3 Script):
+python3 /usr/bin/osken-manager controller/garro_controller.py \
     --observe-links \
     --wsapi-port 8080 \
     --ofp-tcp-listen-port 6633

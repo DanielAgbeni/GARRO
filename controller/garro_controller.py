@@ -9,6 +9,9 @@ Handles:
 Run with:
     osken-manager controller/garro_controller.py \
         --observe-links
+    OR:
+    python3 /usr/bin/osken-manager controller/garro_controller.py \
+        --observe-links
 """
 from os_ken.base import app_manager
 from os_ken.controller import ofp_event

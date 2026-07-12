@@ -5,6 +5,8 @@ Run with: sudo python topologies/mininet_nsfnet.py
 Requires Mininet installed system-wide (not in venv).
 Start the OS-Ken controller first:
     osken-manager controller/garro_controller.py --observe-links
+    OR
+    python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links
 """
 from mininet.net import Mininet
 from mininet.node import OVSKernelSwitch, RemoteController
