@@ -67,7 +67,7 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            overflow: auto; /* Prevent body scroll */
+            overflow: auto;
             font-size: 14px;
             -webkit-font-smoothing: antialiased;
         }
@@ -142,6 +142,7 @@
             display: flex;
             flex-direction: column;
             overflow-y: auto;
+            gap: 16px;
         }
 
         /* ── UI Components ── */
@@ -154,12 +155,26 @@
             padding: 20px;
         }
 
+        .card-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
         .card-title {
             font-size: 14px;
             font-weight: 600;
-            margin-bottom: 16px;
             letter-spacing: -0.01em;
             color: var(--foreground);
+        }
+
+        .card-subtitle {
+            font-size: 12px;
+            color: var(--muted-foreground);
+            line-height: 1.5;
+            margin-bottom: 16px;
         }
 
         .label {
@@ -186,6 +201,32 @@
         }
 
         .textarea:focus {
+            border-color: var(--ring);
+        }
+
+        /* ── Quick-intent presets ── */
+        .preset-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .chip {
+            font-size: 11px;
+            font-weight: 500;
+            padding: 5px 11px;
+            border-radius: 9999px;
+            border: 1px solid var(--border);
+            background-color: transparent;
+            color: var(--muted-foreground);
+            cursor: pointer;
+            transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+        }
+
+        .chip:hover {
+            background-color: var(--secondary);
+            color: var(--foreground);
             border-color: var(--ring);
         }
 
@@ -275,22 +316,14 @@
             flex-shrink: 0;
         }
 
+        .spinner-lg {
+            width: 22px;
+            height: 22px;
+            border-width: 3px;
+        }
+
         @keyframes spin {
             to { transform: rotate(360deg); }
-        }
-
-        /* Pulsing dots text animation */
-        .loading-dots::after {
-            content: '';
-            animation: dots 1.4s steps(4, end) infinite;
-        }
-
-        @keyframes dots {
-            0%   { content: ''; }
-            25%  { content: '.'; }
-            50%  { content: '..'; }
-            75%  { content: '...'; }
-            100% { content: ''; }
         }
 
         /* ── Toast Notifications ── */
@@ -393,11 +426,22 @@
             font-size: 11px;
             color: var(--muted-foreground);
             white-space: normal;
-            width: 200px;
+            width: 210px;
             line-height: 1.5;
             box-shadow: 0 4px 16px rgba(0,0,0,0.4);
             z-index: 100;
             pointer-events: none;
+        }
+
+        .tooltip-bubble.align-left {
+            left: 0;
+            transform: translateX(0);
+        }
+
+        .tooltip-bubble.align-right {
+            left: auto;
+            right: 0;
+            transform: translateX(0);
         }
 
         .tooltip-bubble::after {
@@ -408,6 +452,17 @@
             transform: translateX(-50%);
             border: 5px solid transparent;
             border-top-color: var(--border);
+        }
+
+        .tooltip-bubble.align-left::after {
+            left: 10px;
+            transform: translateX(0);
+        }
+
+        .tooltip-bubble.align-right::after {
+            left: auto;
+            right: 10px;
+            transform: translateX(0);
         }
 
         .tooltip-wrap:hover .tooltip-bubble {
@@ -525,6 +580,104 @@
             word-break: break-all;
         }
 
+        /* ── Topology Status Bar ── */
+        .topo-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .topo-render-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--foreground);
+            padding: 5px 12px;
+            background-color: var(--secondary);
+            border: 1px solid var(--border);
+            border-radius: 9999px;
+        }
+
+        .topo-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background-color: #a78bfa;
+            box-shadow: 0 0 6px rgba(167,139,250,0.55);
+            flex-shrink: 0;
+        }
+
+        .topo-dot.switching {
+            background-color: #f59e0b;
+            box-shadow: 0 0 6px rgba(245,158,11,0.55);
+            animation: pulseDot 1s ease-in-out infinite;
+        }
+
+        @keyframes pulseDot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+
+        /* ── Canvas Legend ── */
+        .canvas-legend {
+            position: absolute;
+            bottom: 16px;
+            left: 16px;
+            background-color: var(--card);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 10px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            font-size: 11px;
+            color: var(--muted-foreground);
+            z-index: 2;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.2);
+        }
+
+        .legend-title {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--foreground);
+            margin-bottom: 2px;
+        }
+
+        .legend-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .legend-swatch-box {
+            width: 11px;
+            height: 11px;
+            border-radius: 3px;
+            border: 1px solid var(--muted-foreground);
+            flex-shrink: 0;
+        }
+
+        .legend-swatch-line {
+            width: 18px;
+            height: 0;
+            border-top: 2px solid var(--muted-foreground);
+            flex-shrink: 0;
+        }
+
+        .legend-swatch-line.dashed {
+            border-top-style: dashed;
+        }
+
+        .legend-swatch-line.active {
+            border-top: 3px solid var(--primary);
+        }
+
         /* ── Vis.js Canvas ── */
         .canvas-container {
             flex: 1;
@@ -556,10 +709,6 @@
         }
 
         /* ── Analytics Dock ── */
-        .content {
-            gap: 24px;
-        }
-
         .analytics-dock {
             height: 250px;
             flex-shrink: 0;
@@ -644,20 +793,374 @@
             background-color: #a78bfa;
             flex-shrink: 0;
         }
+
+        /* ══════════════════════════════════════════════
+           Speed Test — Right Panel
+        ══════════════════════════════════════════════ */
+
+        /* Right panel slides in from the right */
+        .speed-panel {
+            width: 0;
+            min-width: 0;
+            overflow: hidden;
+            transition: width 0.3s cubic-bezier(.22,1,.36,1),
+                        min-width 0.3s cubic-bezier(.22,1,.36,1);
+            border-left: 1px solid transparent;
+            background: var(--background);
+            display: flex;
+            flex-direction: column;
+        }
+        .speed-panel.open {
+            width: 380px;
+            min-width: 380px;
+            border-left-color: var(--border);
+        }
+        .speed-panel-inner {
+            width: 380px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+        .speed-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 20px 0;
+            flex-shrink: 0;
+        }
+        .speed-panel-title {
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+        .speed-panel-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: linear-gradient(135deg,#38bdf8,#818cf8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .speed-panel-close {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted-foreground);
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+            margin-top: 0;
+        }
+        .speed-panel-close:hover { background: var(--secondary); }
+        .speed-panel-body {
+            padding: 16px 20px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            flex: 1;
+        }
+        .st-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        .st-field {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .st-select {
+            height: 34px;
+            background: var(--background);
+            border: 1px solid var(--input);
+            border-radius: calc(var(--radius) - 2px);
+            color: var(--foreground);
+            font-family: inherit;
+            font-size: 12px;
+            padding: 0 8px;
+            outline: none;
+            cursor: pointer;
+            width: 100%;
+            transition: border-color 0.15s;
+        }
+        .st-select:focus { border-color: var(--ring); }
+        .st-dur-field { width: 80px; flex: none; }
+        .st-run-wrap {
+            position: relative;
+            border-radius: calc(var(--radius) - 2px);
+        }
+        .st-run-wrap.running::before {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            border-radius: calc(var(--radius));
+            background: linear-gradient(90deg,#38bdf8,#818cf8,#c084fc,#38bdf8);
+            background-size: 300% 300%;
+            animation: moveGradient 1.5s linear infinite;
+            z-index: -1;
+            filter: blur(6px);
+            opacity: 0.8;
+        }
+        .btn-run {
+            height: 36px;
+            width: 100%;
+            border-radius: calc(var(--radius) - 2px);
+            background: linear-gradient(90deg,#38bdf8,#818cf8);
+            color: #fff;
+            font-weight: 600;
+            font-size: 13px;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            transition: opacity 0.15s;
+            letter-spacing: -0.01em;
+            margin-top: 0;
+        }
+        .btn-run:hover { opacity: 0.88; }
+        .btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Highlight badge shown on topology canvas when test is active */
+        .st-active-badge {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            background: rgba(56,189,248,0.12);
+            border: 1px solid rgba(56,189,248,0.35);
+            border-radius: 9999px;
+            font-size: 11px;
+            color: #38bdf8;
+            font-weight: 500;
+        }
+        .st-active-badge.visible { display: flex; }
+        .st-active-badge-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #38bdf8;
+            animation: pulseDot 0.8s ease-in-out infinite;
+        }
+
+        /* Progress bar */
+        .st-progress {
+            height: 3px;
+            background: var(--secondary);
+            border-radius: 9999px;
+            overflow: hidden;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .st-progress.visible { opacity: 1; }
+        .st-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg,#38bdf8,#818cf8);
+            width: 0%;
+            transition: width 0.5s linear;
+            border-radius: 9999px;
+        }
+
+        /* Result sections */
+        .st-results {
+            display: none;
+            flex-direction: column;
+            gap: 14px;
+            animation: fadeSlideUp 0.3s ease;
+        }
+        .st-results.visible { display: flex; }
+        @keyframes fadeSlideUp {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .st-section-title {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted-foreground);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .st-section-title::after {
+            content: ''; flex: 1; height: 1px; background: var(--border);
+        }
+        .st-metrics {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        .st-metric {
+            background: var(--secondary);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 10px 6px;
+            text-align: center;
+            transition: border-color 0.3s;
+        }
+        .st-metric-value {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+        }
+        .st-metric-unit {
+            font-size: 9px;
+            color: var(--muted-foreground);
+            margin-top: 1px;
+        }
+        .st-metric-label {
+            font-size: 9px;
+            color: var(--muted-foreground);
+            margin-top: 3px;
+        }
+        .st-metric.good .st-metric-value  { color: #22c55e; }
+        .st-metric.warn .st-metric-value  { color: #f59e0b; }
+        .st-metric.bad  .st-metric-value  { color: #f87171; }
+        .st-metric.info .st-metric-value  { color: #60a5fa; }
+
+        /* iperf full-width bars */
+        .st-iperf-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .st-iperf-metric {
+            background: var(--secondary);
+            border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 11px 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .st-iperf-icon { font-size: 18px; flex-shrink: 0; }
+        .st-iperf-body { flex: 1; min-width: 0; }
+        .st-iperf-value {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: #38bdf8;
+        }
+        .st-iperf-label {
+            font-size: 10px;
+            color: var(--muted-foreground);
+            margin-top: 2px;
+        }
+
+        /* Traceroute table */
+        .st-trace-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .st-trace-table th {
+            text-align: left;
+            color: var(--muted-foreground);
+            font-weight: 500;
+            padding: 4px 6px;
+            border-bottom: 1px solid var(--border);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .st-trace-table td {
+            padding: 5px 6px;
+            border-bottom: 1px solid var(--border);
+            font-family: monospace;
+            color: var(--foreground);
+        }
+        .st-trace-table td:first-child { color: var(--muted-foreground); width: 24px; text-align: center; }
+        .st-trace-table td.latency { color: #38bdf8; font-weight: 600; }
+        .st-trace-table td.star { color: var(--muted-foreground); }
+
+        /* Raw ping collapsible */
+        .st-raw-toggle {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 10px; color: var(--muted-foreground);
+            cursor: pointer; background: none; border: none;
+            padding: 0; font-family: inherit; margin-top: 0;
+            width: auto; height: auto;
+        }
+        .st-raw-toggle:hover { color: var(--foreground); }
+        .st-raw-caret { transition: transform 0.2s; }
+        .st-raw-caret.open { transform: rotate(90deg); }
+        .st-raw-box {
+            display: none; margin-top: 6px;
+            font-family: monospace; font-size: 10px;
+            color: var(--muted-foreground);
+            background: var(--background); border: 1px solid var(--border);
+            border-radius: calc(var(--radius) - 4px);
+            padding: 8px 10px; white-space: pre-wrap; word-break: break-all;
+            max-height: 130px; overflow-y: auto; line-height: 1.6;
+        }
+
+        /* Error / warning banner */
+        .st-error {
+            background: rgba(239,68,68,0.08);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: calc(var(--radius) - 2px);
+            padding: 8px 12px; font-size: 11px; color: #f87171; line-height: 1.5;
+        }
+
+        /* Speed Test toggle button in header */
+        .btn-speedtest {
+            display: inline-flex; align-items: center; gap: 6px;
+            height: 32px; padding: 0 14px; border-radius: 9999px;
+            border: 1px solid var(--border); background: transparent;
+            color: var(--foreground); font-size: 12px; font-weight: 500;
+            font-family: inherit; cursor: pointer;
+            transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+            margin-top: 0; width: auto;
+        }
+        .btn-speedtest:hover, .btn-speedtest.active {
+            background: var(--secondary);
+            border-color: #38bdf8;
+            box-shadow: 0 0 0 1px rgba(56,189,248,0.3);
+        }
+        .btn-speedtest-dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: #38bdf8;
+            box-shadow: 0 0 6px rgba(56,189,248,0.7);
+            flex-shrink: 0;
+        }
     </style>
 </head>
+
 <body>
 
     <header>
         <div class="logo">
-            GARRO 
+            GARRO
             <span class="badge">AI Controller</span>
         </div>
-        <div style="font-size: 13px; color: var(--muted-foreground); display: flex; align-items: center; gap: 16px;">
+        <div style="font-size: 13px; color: var(--muted-foreground); display: flex; align-items: center; gap: 12px;">
+            <button id="speedtest-open-btn" class="btn-speedtest" title="Test network speed between hosts">
+                <span class="btn-speedtest-dot"></span>
+                ⚡ Speed Test
+            </button>
             <button id="theme-toggle" class="btn btn-secondary theme-toggle" title="Toggle Light/Dark Mode">☀️</button>
-            <div style="display: flex; align-items: center;">
-                <div class="status-dot"></div> Live Network Emulation
-            </div>
+            <span class="tooltip-wrap">
+                <div style="display: flex; align-items: center;">
+                    <div class="status-dot"></div> Live Network Emulation
+                </div>
+                <span class="tooltip-icon">?</span>
+                <div class="tooltip-bubble align-right">The Mininet emulator and PPO routing agent are running and reporting live telemetry roughly every 1.5 seconds.</div>
+            </span>
         </div>
     </header>
 
@@ -666,19 +1169,36 @@
     <div class="main-container">
         <!-- Sidebar -->
         <aside class="sidebar">
-            
+
             <div class="card">
-                <div class="card-title">Operator Intent</div>
+                <div class="card-title-row">
+                    <span class="tooltip-wrap">
+                        <span class="card-title">Operator Intent</span>
+                        <span class="tooltip-icon">?</span>
+                        <div class="tooltip-bubble">Type a routing goal in plain English. An LLM converts it into DRL reward weights, which the PPO agent then uses to re-route traffic.</div>
+                    </span>
+                </div>
+                <div class="card-subtitle">Describe what you want the network to prioritize — the agent handles the rest.</div>
                 <form id="intent-form">
                     <label class="label">Natural Language Routing Objective</label>
                     <textarea class="textarea" id="intent-input" placeholder="e.g. Optimize for ultra-low latency, or maximize throughput..."></textarea>
+                    <div class="preset-chips" id="preset-chips">
+                        <button type="button" class="chip" data-text="Optimize for the lowest possible end-to-end latency, even if it costs some throughput.">Low latency</button>
+                        <button type="button" class="chip" data-text="Maximize total network throughput across all active flows.">Max throughput</button>
+                        <button type="button" class="chip" data-text="Balance traffic evenly across all links to avoid congestion hotspots.">Load balance</button>
+                        <button type="button" class="chip" data-text="Minimize packet loss above all else, even at the cost of some delay.">Minimize loss</button>
+                    </div>
                     <button class="btn btn-primary" id="submit-btn" type="submit">
                         <span id="btn-text">Submit Intent</span>
                     </button>
                 </form>
-                
+
                 <div style="margin-top: 24px;">
-                    <div class="label">Active Configuration</div>
+                    <span class="tooltip-wrap">
+                        <div class="label" style="margin-bottom: 8px;">Active Configuration</div>
+                        <span class="tooltip-icon">?</span>
+                        <div class="tooltip-bubble">The most recent intent that was successfully parsed and applied to the routing agent.</div>
+                    </span>
                     <div class="ai-orb-wrapper" id="intent-wrapper">
                         <div class="intent-display" id="active-intent">Waiting for intent telemetry...</div>
                     </div>
@@ -686,7 +1206,14 @@
             </div>
 
             <div class="card" id="weights-card">
-                <div class="card-title">DRL Reward Weights</div>
+                <div class="card-title-row">
+                    <span class="tooltip-wrap">
+                        <span class="card-title">DRL Reward Weights</span>
+                        <span class="tooltip-icon">?</span>
+                        <div class="tooltip-bubble">The four coefficients (α1–α4) that make up the PPO agent's reward function. Together they always describe one routing strategy.</div>
+                    </span>
+                </div>
+                <div class="card-subtitle">How the agent currently balances throughput, delay, loss, and load.</div>
                 <div class="progress-group">
                     <div class="progress-item">
                         <div class="progress-header">
@@ -736,7 +1263,14 @@
             </div>
 
             <div class="card" style="flex: 1; display: flex; flex-direction: column;" id="flows-card">
-                <div class="card-title">Active PPO Flows</div>
+                <div class="card-title-row">
+                    <span class="tooltip-wrap">
+                        <span class="card-title">Active PPO Flows</span>
+                        <span class="tooltip-icon">?</span>
+                        <div class="tooltip-bubble">Every host-to-host demand currently being routed, along with the exact switch path the agent chose for it.</div>
+                    </span>
+                </div>
+                <div class="card-subtitle" style="margin-bottom: 12px;">Live paths the agent has computed between hosts.</div>
                 <div id="flow-list" style="overflow-y: auto; flex: 1;">
                     <div class="text-muted">No flows detected. Ping hosts to initiate routing.</div>
                 </div>
@@ -746,19 +1280,45 @@
 
         <!-- Main Content -->
         <main class="content">
+
+            <!-- Topology Status -->
+            <div class="topo-bar">
+                <span class="tooltip-wrap">
+                    <span class="label" style="margin-bottom: 0;">Network Topology</span>
+                    <span class="tooltip-icon">?</span>
+                    <div class="tooltip-bubble align-left">The controller automatically deploys one of two standard research topologies, NSFNET2 or GEANT2, based on the emulator's configuration. This reflects whichever one is currently running — it isn't user-selectable here.</div>
+                </span>
+                <span class="topo-render-badge" id="topo-render-badge">
+                    <span class="topo-dot" id="topo-render-dot"></span>
+                    Rendering: <strong id="topo-render-label">Detecting topology...</strong>
+                </span>
+            </div>
+
             <div class="canvas-container">
-                <div id="empty-map-text" class="empty-state">Initializing Topology Map...</div>
+                <div id="empty-map-text" class="empty-state">Waiting for the emulator to report a topology...</div>
                 <div id="mynetwork"></div>
+
+                <div class="canvas-legend">
+                    <div class="legend-title">Legend</div>
+                    <div class="legend-row"><span class="legend-swatch-box" style="background-color: var(--secondary);"></span> Switch</div>
+                    <div class="legend-row"><span class="legend-swatch-box" style="background-color: var(--background);"></span> Host</div>
+                    <div class="legend-row"><span class="legend-swatch-line dashed"></span> Idle host link</div>
+                    <div class="legend-row"><span class="legend-swatch-line active"></span> Active routed path</div>
+                </div>
             </div>
 
             <!-- Analytics Dock -->
             <div class="analytics-dock" id="panel-analytics">
-                
+
                 <!-- Chart: Simulated Per-Weight Performance -->
                 <div class="chart-card">
                     <div class="chart-header">
                         <div>
-                            <div class="chart-title">Weight vs. Performance</div>
+                            <span class="tooltip-wrap">
+                                <span class="chart-title">Weight vs. Performance</span>
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble align-left">A snapshot of the four reward weights right now, plotted so you can see the current routing strategy's shape at a glance.</div>
+                            </span>
                             <div class="chart-subtitle">Latest α snapshot — radar view</div>
                         </div>
                         <div class="chart-stat">
@@ -772,7 +1332,11 @@
                 <div class="chart-card">
                     <div class="chart-header">
                         <div>
-                            <div class="chart-title">Network Health Score</div>
+                            <span class="tooltip-wrap">
+                                <span class="chart-title">Network Health Score</span>
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble align-left">A single 0–100 composite of the reward weights: higher throughput and load balance push it up, higher delay and loss pull it down.</div>
+                            </span>
                             <div class="chart-subtitle">Composite DRL reward signal (0–100)</div>
                         </div>
                         <div class="chart-stat">
@@ -787,7 +1351,11 @@
                 <div class="chart-card">
                     <div class="chart-header">
                         <div>
-                            <div class="chart-title">Active Flow Count</div>
+                            <span class="tooltip-wrap">
+                                <span class="chart-title">Active Flow Count</span>
+                                <span class="tooltip-icon">?</span>
+                                <div class="tooltip-bubble align-right">How many host-to-host flows the PPO agent is routing at once, sampled every 1.5 seconds.</div>
+                            </span>
                             <div class="chart-subtitle">Concurrent PPO-routed flows</div>
                         </div>
                         <div class="chart-stat">
@@ -800,6 +1368,190 @@
 
             </div>
         </main>
+
+        <!-- ══════════════════════════════════════════════
+             Speed Test — Right Panel (inside main-container
+             so topology + panel are side-by-side)
+        ══════════════════════════════════════════════ -->
+        <aside class="speed-panel" id="speed-panel" role="complementary" aria-label="Network Speed Test">
+            <div class="speed-panel-inner">
+                <div class="speed-panel-header">
+                    <div class="speed-panel-title">
+                        <div class="speed-panel-icon">⚡</div>
+                        Network Probe
+                    </div>
+                    <button class="speed-panel-close btn" id="speedtest-close-btn" aria-label="Close">✕</button>
+                </div>
+                <div class="speed-panel-body">
+
+                    <!-- Live-test badge shown above topology -->
+                    <div class="st-active-badge" id="st-active-badge">
+                        <span class="st-active-badge-dot"></span>
+                        <span id="st-active-badge-label">Probing …</span>
+                    </div>
+
+                    <!-- Host selectors -->
+                    <div class="st-row">
+                        <div class="st-field">
+                            <label class="label" style="font-size:11px;" for="st-src">Source</label>
+                            <select class="st-select" id="st-src"></select>
+                        </div>
+                        <div style="font-size:16px; color:var(--muted-foreground); padding-bottom:4px;">→</div>
+                        <div class="st-field">
+                            <label class="label" style="font-size:11px;" for="st-dst">Destination</label>
+                            <select class="st-select" id="st-dst"></select>
+                        </div>
+                    </div>
+
+                    <!-- Test type + duration -->
+                    <div class="st-row">
+                        <div class="st-field">
+                            <label class="label" style="font-size:11px;" for="st-type">Test Type</label>
+                            <select class="st-select" id="st-type">
+                                <option value="full">🔬 Full Suite</option>
+                                <option value="ping">📡 Ping Only</option>
+                                <option value="tcp">📶 TCP Throughput</option>
+                                <option value="udp">📻 UDP (Jitter)</option>
+                                <option value="traceroute">🗺 Traceroute</option>
+                            </select>
+                        </div>
+                        <div class="st-field st-dur-field">
+                            <label class="label" style="font-size:11px;" for="st-dur">Dur.</label>
+                            <select class="st-select" id="st-dur">
+                                <option value="3">3 s</option>
+                                <option value="5" selected>5 s</option>
+                                <option value="10">10 s</option>
+                                <option value="15">15 s</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Run button -->
+                    <div class="st-run-wrap" id="st-run-wrap">
+                        <button class="btn-run" id="st-run-btn">
+                            <span id="st-run-icon">▶</span>
+                            <span id="st-run-label">Run Probe</span>
+                        </button>
+                    </div>
+
+                    <!-- Progress bar -->
+                    <div class="st-progress" id="st-progress">
+                        <div class="st-progress-fill" id="st-progress-fill"></div>
+                    </div>
+
+                    <!-- Error / warning banner -->
+                    <div class="st-error" id="st-error" style="display:none;"></div>
+
+                    <!-- Results -->
+                    <div class="st-results" id="st-results">
+
+                        <!-- ── Ping ── -->
+                        <div class="st-section-title" id="st-sec-ping">📡 Ping — Latency &amp; Loss</div>
+                        <div class="st-metrics">
+                            <div class="st-metric" id="stm-rtt-avg">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">ms</div>
+                                <div class="st-metric-label">Avg RTT</div>
+                            </div>
+                            <div class="st-metric" id="stm-rtt-min">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">ms</div>
+                                <div class="st-metric-label">Min RTT</div>
+                            </div>
+                            <div class="st-metric" id="stm-rtt-max">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">ms</div>
+                                <div class="st-metric-label">Max RTT</div>
+                            </div>
+                            <div class="st-metric" id="stm-loss">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">%</div>
+                                <div class="st-metric-label">Pkt Loss</div>
+                            </div>
+                        </div>
+
+                        <!-- ── TCP iperf3 ── -->
+                        <div class="st-section-title" id="st-sec-tcp">📶 TCP Throughput</div>
+                        <div class="st-iperf-row">
+                            <div class="st-iperf-metric">
+                                <div class="st-iperf-icon">⬆️</div>
+                                <div class="st-iperf-body">
+                                    <div class="st-iperf-value" id="stm-tx">—</div>
+                                    <div class="st-iperf-label">Mbps Sent</div>
+                                </div>
+                            </div>
+                            <div class="st-iperf-metric">
+                                <div class="st-iperf-icon">⬇️</div>
+                                <div class="st-iperf-body">
+                                    <div class="st-iperf-value" id="stm-rx">—</div>
+                                    <div class="st-iperf-label">Mbps Received</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="st-iperf-row">
+                            <div class="st-iperf-metric">
+                                <div class="st-iperf-icon">🔁</div>
+                                <div class="st-iperf-body">
+                                    <div class="st-iperf-value" id="stm-retx" style="color:#f59e0b;">—</div>
+                                    <div class="st-iperf-label">Retransmits</div>
+                                </div>
+                            </div>
+                            <div class="st-iperf-metric">
+                                <div class="st-iperf-icon">📦</div>
+                                <div class="st-iperf-body">
+                                    <div class="st-iperf-value" id="stm-bytes" style="color:#a78bfa;">—</div>
+                                    <div class="st-iperf-label">MB Transferred</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ── UDP iperf3 ── -->
+                        <div class="st-section-title" id="st-sec-udp">📻 UDP — Jitter &amp; Loss</div>
+                        <div class="st-metrics">
+                            <div class="st-metric" id="stm-jitter">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">ms</div>
+                                <div class="st-metric-label">Jitter</div>
+                            </div>
+                            <div class="st-metric" id="stm-udp-loss">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">%</div>
+                                <div class="st-metric-label">UDP Loss</div>
+                            </div>
+                            <div class="st-metric" id="stm-udp-mbps">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">Mbps</div>
+                                <div class="st-metric-label">UDP BW</div>
+                            </div>
+                            <div class="st-metric" id="stm-udp-pkts">
+                                <div class="st-metric-value">—</div>
+                                <div class="st-metric-unit">pkts</div>
+                                <div class="st-metric-label">Total Pkts</div>
+                            </div>
+                        </div>
+
+                        <!-- ── Traceroute ── -->
+                        <div class="st-section-title" id="st-sec-trace">🗺 Traceroute — Hop-by-Hop</div>
+                        <div id="st-trace-wrap" style="overflow-x:auto;">
+                            <table class="st-trace-table">
+                                <thead><tr><th>#</th><th>IP / Host</th><th>Latency</th></tr></thead>
+                                <tbody id="st-trace-body"><tr><td colspan="3" style="color:var(--muted-foreground);padding:8px 6px;">Run a test to see hops.</td></tr></tbody>
+                            </table>
+                        </div>
+
+                        <!-- Raw ping collapsible -->
+                        <div>
+                            <button class="st-raw-toggle" id="st-raw-toggle">
+                                <span class="st-raw-caret" id="st-raw-caret">▶</span>
+                                Raw ping output
+                            </button>
+                            <pre class="st-raw-box" id="st-raw-box"></pre>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </aside>
     </div>
 
     <script>
@@ -810,10 +1562,17 @@
         let isProcessing = false;
         let processingTimeout = null;
 
+        // ── Topology state (fully backend-driven, read-only in the UI) ──
+        let currentTopologyLabel = null;
+        // Fallback sizing heuristic if the backend doesn't send a `topology`
+        // field directly — classic NSFNET has 14 nodes, GEANT2 is typically
+        // modeled with 40. Adjust these if your emulator's node counts differ.
+        const topoSizeMap = { 14: 'NSFNET2', 40: 'GEANT2' };
+
         // Theme management
         const html = document.documentElement;
         const themeToggle = document.getElementById('theme-toggle');
-        
+
         function applyTheme(theme) {
             if (theme === 'light') {
                 html.setAttribute('data-theme', 'light');
@@ -826,7 +1585,7 @@
             const isLight = theme === 'light';
             Chart.defaults.color = isLight ? '#71717a' : '#a1a1aa';
             Chart.defaults.borderColor = isLight ? '#e4e4e7' : '#27272a';
-            
+
             if (chartHealth || chartFlows || chartRadar) {
                 updateCharts();
                 if (chartHealth) {
@@ -863,7 +1622,7 @@
             COLOR_LINK_INACTIVE = isLight ? '#d4d4d8' : '#3f3f46';
             COLOR_LINK_ACTIVE = isLight ? '#18181b' : '#fafafa';
             COLOR_TEXT = isLight ? '#09090b' : '#fafafa';
-            
+
             if (network) {
                 // Redraw all nodes and edges with new colors
                 nodesDataset.forEach(n => {
@@ -887,7 +1646,7 @@
 
         // Initialize theme
         const savedTheme = localStorage.getItem('garro_theme') || 'dark';
-        
+
         let COLOR_NODE = '#27272a';
         let COLOR_NODE_BORDER = '#71717a';
         let COLOR_HOST = '#09090b';
@@ -1097,13 +1856,40 @@
             network.on("stabilizationIterationsDone", () => network.fit());
         }
 
+        // ── Topology detection (read-only display, driven by backend state) ──
+        // Resolves a human-readable name from whatever the backend sends:
+        // prefers an explicit `state.topology` field, falls back to a node-count
+        // heuristic, and otherwise just reports the raw node count.
+        function resolveTopologyLabel(state) {
+            if (state.topology) {
+                const key = String(state.topology).toLowerCase();
+                if (key.includes('nsfnet')) return 'NSFNET2';
+                if (key.includes('geant')) return 'GEANT2';
+                return String(state.topology).toUpperCase();
+            }
+            if (state.nodes && state.nodes.length) {
+                return topoSizeMap[state.nodes.length] || `Custom topology (${state.nodes.length} nodes)`;
+            }
+            return null;
+        }
+
+        function setTopologyLabel(label, isChanging) {
+            document.getElementById('topo-render-dot').classList.toggle('switching', !!isChanging);
+            if (!label) return;
+            document.getElementById('topo-render-label').innerText = label;
+            if (currentTopologyLabel !== null && currentTopologyLabel !== label) {
+                showToast("info", "Topology Changed", `The controller is now running ${label}.`);
+            }
+            currentTopologyLabel = label;
+        }
+
         async function fetchState() {
             try {
                 const response = await fetch('/garro/state?t=' + new Date().getTime());
                 if (!response.ok) return;
                 const state = await response.json();
                 if (state.current_intent) document.getElementById('active-intent').innerText = state.current_intent;
-                
+
                 const w = state.current_weights || {};
                 updateProgress('alpha1', w.alpha1 || 0);
                 updateProgress('alpha2', w.alpha2 || 0);
@@ -1122,8 +1908,15 @@
 
                 if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
                     document.getElementById('empty-map-text').style.display = 'none';
+                    setTopologyLabel(resolveTopologyLabel(state), true);
                     buildInitialTopology(state.nodes, state.edges);
                     knownEdgeCount = state.edges.length;
+                    setTimeout(() => setTopologyLabel(resolveTopologyLabel(state), false), 400);
+                } else {
+                    // Keep the label in sync even on polls that don't trigger
+                    // a topology rebuild (e.g. it arrives a beat later than nodes/edges)
+                    const label = resolveTopologyLabel(state);
+                    if (label) setTopologyLabel(label, false);
                 }
                 const flowCount = state.active_paths ? Object.keys(state.active_paths).length : 0;
                 updateFlowsList(state.active_paths);
@@ -1189,6 +1982,15 @@
                 }
             }
         }
+
+        // Quick-intent preset chips
+        document.querySelectorAll('.chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                const input = document.getElementById('intent-input');
+                input.value = chip.dataset.text;
+                input.focus();
+            });
+        });
 
         document.getElementById('intent-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -1258,7 +2060,429 @@
             initCharts();
             fetchState();
             setInterval(fetchState, 1500);
+            stInit();
         });
+
+        // ══════════════════════════════════════════════════════════════
+        //  Speed Test — Right Panel + Topology Highlighting
+        // ══════════════════════════════════════════════════════════════
+
+        // Track which nodes/edges are highlighted by the speed test so we
+        // can restore them cleanly without touching PPO-driven highlights.
+        let stFlowInterval   = null;   // animation timer
+        let stFlowPhase      = 0;
+        let stHighlightedSrc = null;   // 'h_1' style vis ID
+        let stHighlightedDst = null;
+        let stHighlightedEdges = [];   // edge IDs currently animated
+
+        const ST_SRC_COLOR = { background: 'rgba(56,189,248,0.18)', border: '#38bdf8' };
+        const ST_DST_COLOR = { background: 'rgba(192,132,252,0.18)', border: '#c084fc' };
+        const ST_FLOW_COLORS = ['#38bdf8', '#818cf8', '#c084fc'];
+
+        function stHighlightSelection(srcHost, dstHost, running) {
+            if (!network) return;
+
+            // Map host name (h1) → vis node id (h_1)
+            function hostToVis(name) {
+                const m = name.match(/h(\d+)/);
+                return m ? `h_${m[1]}` : null;
+            }
+
+            const srcId = hostToVis(srcHost);
+            const dstId = hostToVis(dstHost);
+
+            // Reset any previous highlight
+            stClearHighlight();
+            stHighlightedSrc = srcId;
+            stHighlightedDst = dstId;
+
+            // Dim all nodes; glow src and dst
+            nodesDataset.forEach(n => {
+                const isHost = n.id.startsWith('h_');
+                if (n.id === srcId) {
+                    nodesDataset.update({
+                        id: n.id,
+                        color: { background: ST_SRC_COLOR.background, border: ST_SRC_COLOR.border },
+                        borderWidth: 3,
+                        font: { color: '#38bdf8' }
+                    });
+                } else if (n.id === dstId) {
+                    nodesDataset.update({
+                        id: n.id,
+                        color: { background: ST_DST_COLOR.background, border: ST_DST_COLOR.border },
+                        borderWidth: 3,
+                        font: { color: '#c084fc' }
+                    });
+                } else {
+                    nodesDataset.update({
+                        id: n.id,
+                        color: { background: isHost ? 'rgba(9,9,11,0.35)' : 'rgba(39,39,42,0.35)', border: 'rgba(113,113,122,0.3)' },
+                        font: { color: 'rgba(250,250,250,0.3)' }
+                    });
+                }
+            });
+
+            // Highlight/animate the switch→switch edges on the known path
+            const srcNum = srcHost.replace('h','');
+            const dstNum = dstHost.replace('h','');
+            const pathKey = `10.0.0.${srcNum}->10.0.0.${dstNum}`;
+            // Also check reverse
+            let pathEdges = [];
+
+            // Collect all edges between src-switch and dst-switch on known active_paths
+            // Fallback: just highlight all edges to draw attention
+            edgesDataset.forEach(e => {
+                if (!e.id.startsWith('link_h_')) pathEdges.push(e.id);
+            });
+
+            stHighlightedEdges = pathEdges;
+
+            if (running) {
+                stStartFlowAnimation(pathEdges);
+            } else {
+                // Static highlight — show path edges brighter
+                pathEdges.forEach(eid => {
+                    edgesDataset.update({ id: eid, color: { color: 'rgba(56,189,248,0.4)' }, width: 1.5 });
+                });
+            }
+
+            // Host links to src/dst: make them pop
+            [`link_h_${srcHost.replace('h','')}_s_${srcHost.replace('h','')}`,
+             `link_h_${dstHost.replace('h','')}_s_${dstHost.replace('h','')}`].forEach(eid => {
+                const e = edgesDataset.get(eid);
+                if (e) edgesDataset.update({ id: eid, color: { color: running ? '#38bdf8' : 'rgba(56,189,248,0.6)' }, dashes: false, width: 2 });
+            });
+        }
+
+        function stStartFlowAnimation(edgeIds) {
+            stopFlowAnimation();
+            stFlowPhase = 0;
+            stFlowInterval = setInterval(() => {
+                stFlowPhase = (stFlowPhase + 1) % ST_FLOW_COLORS.length;
+                const c1 = ST_FLOW_COLORS[stFlowPhase];
+                const c2 = ST_FLOW_COLORS[(stFlowPhase + 1) % ST_FLOW_COLORS.length];
+                edgeIds.forEach((eid, i) => {
+                    edgesDataset.update({ id: eid, color: { color: i % 2 === 0 ? c1 : c2 }, width: 2.5 });
+                });
+            }, 350);
+        }
+
+        function stopFlowAnimation() {
+            if (stFlowInterval) { clearInterval(stFlowInterval); stFlowInterval = null; }
+        }
+
+        function stClearHighlight() {
+            stopFlowAnimation();
+            if (!stHighlightedSrc && !stHighlightedDst) return;
+
+            // Restore all nodes
+            nodesDataset.forEach(n => {
+                const isHost = n.id.startsWith('h_');
+                nodesDataset.update({
+                    id: n.id,
+                    color: { background: isHost ? COLOR_HOST : COLOR_NODE, border: COLOR_NODE_BORDER },
+                    borderWidth: 1,
+                    font: { color: COLOR_TEXT }
+                });
+            });
+
+            // Restore edges
+            stHighlightedEdges.forEach(eid => {
+                const e = edgesDataset.get(eid);
+                if (e) {
+                    const isHost = eid.startsWith('link_h_');
+                    edgesDataset.update({ id: eid, color: { color: COLOR_LINK_INACTIVE }, width: 1, dashes: isHost });
+                }
+            });
+
+            stHighlightedSrc = null;
+            stHighlightedDst = null;
+            stHighlightedEdges = [];
+        }
+
+        function stInit() {
+            const panel    = document.getElementById('speed-panel');
+            const openBtn  = document.getElementById('speedtest-open-btn');
+            const closeBtn = document.getElementById('speedtest-close-btn');
+
+            function openPanel() {
+                panel.classList.add('open');
+                openBtn.classList.add('active');
+                stPopulateHosts();
+            }
+            function closePanel() {
+                panel.classList.remove('open');
+                openBtn.classList.remove('active');
+                stClearHighlight();
+                document.getElementById('st-active-badge').classList.remove('visible');
+            }
+
+            openBtn.addEventListener('click', () => {
+                panel.classList.contains('open') ? closePanel() : openPanel();
+            });
+            closeBtn.addEventListener('click', closePanel);
+
+            document.getElementById('st-run-btn').addEventListener('click', stRunTest);
+
+            // Live topology highlight on selection change
+            ['st-src','st-dst'].forEach(id => {
+                document.getElementById(id).addEventListener('change', () => {
+                    const src = document.getElementById('st-src').value;
+                    const dst = document.getElementById('st-dst').value;
+                    if (src && dst && src !== dst) stHighlightSelection(src, dst, false);
+                });
+            });
+
+            // Raw ping toggle
+            document.getElementById('st-raw-toggle').addEventListener('click', () => {
+                const box   = document.getElementById('st-raw-box');
+                const caret = document.getElementById('st-raw-caret');
+                const isOpen = box.style.display === 'block';
+                box.style.display  = isOpen ? 'none' : 'block';
+                caret.classList.toggle('open', !isOpen);
+            });
+
+            // Show/hide result sections based on test type
+            document.getElementById('st-type').addEventListener('change', stUpdateSectionVisibility);
+        }
+
+        function stUpdateSectionVisibility() {
+            const type = document.getElementById('st-type').value;
+            const showPing  = type === 'full' || type === 'ping';
+            const showTcp   = type === 'full' || type === 'tcp';
+            const showUdp   = type === 'full' || type === 'udp';
+            const showTrace = type === 'full' || type === 'traceroute';
+            const resultVisible = document.getElementById('st-results').classList.contains('visible');
+            if (!resultVisible) return;  // Only when results are shown
+
+            ['st-sec-ping','stm-rtt-avg','stm-rtt-min','stm-rtt-max','stm-loss'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el && el.closest) {
+                    const card = id === 'st-sec-ping' ? el : null;
+                    if (card) card.style.display = showPing ? '' : 'none';
+                }
+            });
+        }
+
+        async function stPopulateHosts() {
+            const srcSel = document.getElementById('st-src');
+            const dstSel = document.getElementById('st-dst');
+            const prevSrc = srcSel.value;
+            const prevDst = dstSel.value;
+
+            try {
+                const res  = await fetch('/garro/hosts');
+                const data = await res.json();
+                let hosts  = data.hosts || [];
+                if (hosts.length === 0) {
+                    for (let i = 1; i <= 14; i++) hosts.push({ name: `h${i}`, ip: `10.0.0.${i}` });
+                }
+
+                [srcSel, dstSel].forEach((sel, idx) => {
+                    sel.innerHTML = '';
+                    hosts.forEach(h => {
+                        const opt = document.createElement('option');
+                        opt.value    = h.name;
+                        opt.dataset.ip = h.ip;
+                        opt.textContent = `${h.name} (${h.ip})`;
+                        sel.appendChild(opt);
+                    });
+                    if (idx === 0) sel.value = prevSrc || (hosts[0] && hosts[0].name) || 'h1';
+                    else           sel.value = prevDst || (hosts[hosts.length-1] && hosts[hosts.length-1].name) || `h${hosts.length}`;
+                });
+
+                // Initial highlight after populating
+                const src = srcSel.value, dst = dstSel.value;
+                if (src && dst && src !== dst) stHighlightSelection(src, dst, false);
+
+            } catch(e) {
+                console.warn('Could not fetch hosts:', e);
+            }
+        }
+
+        async function stRunTest() {
+            const srcSel   = document.getElementById('st-src');
+            const dstSel   = document.getElementById('st-dst');
+            const typeSel  = document.getElementById('st-type');
+            const durSel   = document.getElementById('st-dur');
+            const runBtn   = document.getElementById('st-run-btn');
+            const runIcon  = document.getElementById('st-run-icon');
+            const runLabel = document.getElementById('st-run-label');
+            const runWrap  = document.getElementById('st-run-wrap');
+            const progress = document.getElementById('st-progress');
+            const progFill = document.getElementById('st-progress-fill');
+            const errBox   = document.getElementById('st-error');
+            const results  = document.getElementById('st-results');
+            const badge    = document.getElementById('st-active-badge');
+            const badgeLbl = document.getElementById('st-active-badge-label');
+
+            const srcHost  = srcSel.value;
+            const dstHost  = dstSel.value;
+            const dstOpt   = dstSel.options[dstSel.selectedIndex];
+            const dstIp    = dstOpt ? dstOpt.dataset.ip : null;
+            const testType = typeSel.value;
+            const duration = parseInt(durSel.value, 10);
+
+            if (srcHost === dstHost) {
+                errBox.textContent = 'Source and destination must be different hosts.';
+                errBox.style.display = 'block';
+                return;
+            }
+
+            // Reset
+            errBox.style.display = 'none';
+            results.classList.remove('visible');
+            runBtn.disabled = true;
+            runWrap.classList.add('running');
+            runIcon.innerHTML = '<div class="spinner" style="border-top-color:#fff"></div>';
+            runLabel.textContent = `Running ${testType === 'full' ? 'Full Suite' : testType}…`;
+
+            badge.classList.add('visible');
+            badgeLbl.textContent = `${srcHost} → ${dstHost} · ${testType}`;
+
+            // Topology highlight with animation
+            stHighlightSelection(srcHost, dstHost, true);
+
+            // Progress bar
+            const totalEst = testType === 'full' ? (duration * 2 + 12)
+                           : testType === 'traceroute' ? 10
+                           : duration + 5;
+            progress.classList.add('visible');
+            progFill.style.width = '0%';
+            const start = Date.now();
+            const progInt = setInterval(() => {
+                const pct = Math.min(93, ((Date.now()-start)/1000 / totalEst) * 100);
+                progFill.style.width = pct + '%';
+            }, 300);
+
+            try {
+                const body = { src_host: srcHost, dst_host: dstHost, test_type: testType, duration };
+                if (dstIp) body.dst_ip = dstIp;
+
+                const res  = await fetch('/garro/speedtest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await res.json();
+
+                clearInterval(progInt);
+                progFill.style.width = '100%';
+                setTimeout(() => { progress.classList.remove('visible'); progFill.style.width = '0%'; }, 600);
+
+                stRenderResults(data, srcHost, dstHost, testType);
+                stHighlightSelection(srcHost, dstHost, false);  // static after test
+
+            } catch(err) {
+                clearInterval(progInt);
+                progress.classList.remove('visible');
+                stClearHighlight();
+                errBox.textContent = `Request failed: ${err.message}. Is the controller running?`;
+                errBox.style.display = 'block';
+            } finally {
+                runBtn.disabled = false;
+                runWrap.classList.remove('running');
+                runIcon.textContent = '▶';
+                runLabel.textContent = 'Run Probe';
+                badge.classList.remove('visible');
+            }
+        }
+
+        function stSetMetric(id, value, colorFn) {
+            const el  = document.getElementById(id);
+            if (!el) return;
+            const val = el.querySelector('.st-metric-value');
+            val.textContent = (value !== null && value !== undefined) ? String(value) : '—';
+            el.classList.remove('good','warn','bad','info');
+            if (value !== null && value !== undefined && colorFn) el.classList.add(colorFn(value));
+        }
+
+        function stRenderResults(data, srcHost, dstHost, testType) {
+            const errBox  = document.getElementById('st-error');
+            const results = document.getElementById('st-results');
+
+            if (data.errors && data.errors.length) {
+                errBox.textContent = '⚠ ' + data.errors.join(' | ');
+                errBox.style.display = 'block';
+            } else {
+                errBox.style.display = 'none';
+            }
+
+            const show = t => testType === 'full' || testType === t;
+
+            // ── Ping ──
+            const secPing = document.getElementById('st-sec-ping');
+            secPing.style.display = show('ping') ? '' : 'none';
+
+            if (data.ping) {
+                const p = data.ping;
+                stSetMetric('stm-rtt-avg', p.rtt_avg_ms != null ? p.rtt_avg_ms.toFixed(1) : null,
+                    v => v < 30 ? 'good' : v < 100 ? 'warn' : 'bad');
+                stSetMetric('stm-rtt-min', p.rtt_min_ms != null ? p.rtt_min_ms.toFixed(1) : null, () => 'info');
+                stSetMetric('stm-rtt-max', p.rtt_max_ms != null ? p.rtt_max_ms.toFixed(1) : null, () => 'info');
+                stSetMetric('stm-loss',    p.packet_loss_pct != null ? p.packet_loss_pct : null,
+                    v => v === 0 ? 'good' : v < 5 ? 'warn' : 'bad');
+                document.getElementById('st-raw-box').textContent = p.raw || '';
+            } else {
+                ['stm-rtt-avg','stm-rtt-min','stm-rtt-max','stm-loss'].forEach(id => stSetMetric(id, null));
+            }
+
+            // ── TCP iperf3 ──
+            const secTcp = document.getElementById('st-sec-tcp');
+            secTcp.style.display = show('tcp') ? '' : 'none';
+
+            if (data.iperf) {
+                const ip = data.iperf;
+                document.getElementById('stm-tx').textContent    = ip.mbps_sent     != null ? ip.mbps_sent.toFixed(1) : '—';
+                document.getElementById('stm-rx').textContent    = ip.mbps_received != null ? ip.mbps_received.toFixed(1) : '—';
+                document.getElementById('stm-retx').textContent  = ip.retransmits   != null ? ip.retransmits : '—';
+                const mb = ip.bytes_sent != null ? (ip.bytes_sent / 1e6).toFixed(1) : null;
+                document.getElementById('stm-bytes').textContent = mb != null ? mb : '—';
+            } else {
+                ['stm-tx','stm-rx','stm-retx','stm-bytes'].forEach(id => { document.getElementById(id).textContent = '—'; });
+            }
+
+            // ── UDP iperf3 ──
+            const secUdp = document.getElementById('st-sec-udp');
+            secUdp.style.display = show('udp') ? '' : 'none';
+
+            if (data.udp) {
+                const u = data.udp;
+                stSetMetric('stm-jitter',   u.jitter_ms    != null ? u.jitter_ms.toFixed(2) : null,
+                    v => v < 2 ? 'good' : v < 10 ? 'warn' : 'bad');
+                stSetMetric('stm-udp-loss', u.lost_percent != null ? u.lost_percent.toFixed(1) : null,
+                    v => v < 1 ? 'good' : v < 5 ? 'warn' : 'bad');
+                stSetMetric('stm-udp-mbps', u.mbps         != null ? u.mbps.toFixed(1) : null, () => 'info');
+                stSetMetric('stm-udp-pkts', u.packets      != null ? u.packets : null, () => 'info');
+            } else {
+                ['stm-jitter','stm-udp-loss','stm-udp-mbps','stm-udp-pkts'].forEach(id => stSetMetric(id, null));
+            }
+
+            // ── Traceroute ──
+            const secTrace = document.getElementById('st-sec-trace');
+            secTrace.style.display = show('traceroute') ? '' : 'none';
+
+            const tbody = document.getElementById('st-trace-body');
+            if (data.traceroute && data.traceroute.hops && data.traceroute.hops.length) {
+                tbody.innerHTML = data.traceroute.hops.map(h => {
+                    const cls = h.rtt != null ? 'latency' : 'star';
+                    const latText = h.rtt != null ? h.rtt.toFixed(2) + ' ms' : '* * *';
+                    const hostText = h.host || h.ip || '*';
+                    return `
+                        <tr>
+                            <td>${h.hop}</td>
+                            <td>${hostText}</td>
+                            <td class="${cls}">${latText}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted-foreground);padding:8px 6px;">No traceroute data available.</td></tr>';
+            }
+
+            results.classList.add('visible');
+            showToast('success', 'Probe Complete', `${srcHost} → ${dstHost} · ${testType} done.`);
+        }
     </script>
 </body>
 </html>

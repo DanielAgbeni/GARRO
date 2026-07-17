@@ -135,6 +135,284 @@ def get_topology():
     return jsonify({"nodes": nodes, "edges": edges})
 
 
+@app.route("/garro/hosts", methods=["GET"])
+def get_hosts():
+    """Return a list of known Mininet hosts derived from the topology.
+    Hosts are h1–hN where N = number of switches discovered.
+    """
+    if controller_instance is None:
+        return jsonify({"error": "Controller not initialized"}), 503
+    n = len(controller_instance.topology.nodes())
+    hosts = [
+        {"name": f"h{i}", "ip": f"10.0.0.{i}"}
+        for i in range(1, n + 1)
+    ]
+    return jsonify({"hosts": hosts})
+
+
+@app.route("/garro/speedtest", methods=["POST"])
+def run_speedtest():
+    """Network performance probe between two Mininet hosts.
+
+    Body JSON::
+        {
+          "src_host":  "h1",
+          "dst_host":  "h14",
+          "dst_ip":    "10.0.0.14",   # optional
+          "test_type": "full",         # ping | tcp | udp | traceroute | full
+          "duration":  5               # iperf3 seconds (default 5)
+        }
+
+    Namespace detection order:
+      1. ``ip netns exec <hostname>`` (works if Mininet created named netns)
+      2. ``nsenter -t <pid> -n`` (searches /proc/*/net/dev for the host iface)
+      3. Fall back with an informative error message.
+    """
+    import subprocess
+    import re
+    import glob
+    import json as _json
+    import time as _time
+
+    if controller_instance is None:
+        return jsonify({"error": "Controller not initialized"}), 503
+
+    body      = request.get_json(force=True, silent=True) or {}
+    src_host  = body.get("src_host", "h1")
+    dst_host  = body.get("dst_host", "h2")
+    duration  = int(body.get("duration", 5))
+    test_type = body.get("test_type", "full")   # ping|tcp|udp|traceroute|full
+
+    # Derive destination IP
+    dst_ip = body.get("dst_ip") or None
+    if dst_ip is None:
+        m = re.match(r"h(\d+)", dst_host)
+        if m:
+            dst_ip = f"10.0.0.{m.group(1)}"
+        else:
+            return jsonify({"error": f"Cannot infer IP for {dst_host}"}), 400
+
+    src_ip = None
+    m = re.match(r"h(\d+)", src_host)
+    if m:
+        src_ip = f"10.0.0.{m.group(1)}"
+
+    result = {
+        "src_host":  src_host,
+        "dst_host":  dst_host,
+        "dst_ip":    dst_ip,
+        "test_type": test_type,
+        "ping":      None,
+        "iperf":     None,
+        "udp":       None,
+        "traceroute": None,
+        "errors":    []
+    }
+
+    # ─────────────────────────────────────────────────────────────────
+    # Namespace detection
+    # Returns the command prefix list to run a command inside the host
+    # network namespace, or None if we can't find it.
+    # ─────────────────────────────────────────────────────────────────
+    def _get_ns_prefix(hostname):
+        # Try 1: ip netns exec (Mininet ≥ 2.3 often creates named netns)
+        try:
+            test = subprocess.run(
+                ["ip", "netns", "exec", hostname, "true"],
+                capture_output=True, timeout=2
+            )
+            if test.returncode == 0:
+                return ["ip", "netns", "exec", hostname]
+        except Exception:
+            pass
+
+        # Try 2: locate PID via /proc/*/net/dev by looking for h1-eth0
+        iface = f"{hostname}-eth0"
+        try:
+            for net_dev in glob.glob("/proc/*/net/dev"):
+                try:
+                    with open(net_dev) as f:
+                        if iface in f.read():
+                            pid = net_dev.split("/")[2]
+                            return ["nsenter", "-t", pid, "-n", "--"]
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return None  # Cannot determine namespace
+
+    src_prefix = _get_ns_prefix(src_host)
+    dst_prefix = _get_ns_prefix(dst_host)
+
+    if src_prefix is None:
+        result["errors"].append(
+            f"Cannot find network namespace for {src_host}. "
+            "Ensure Mininet is running and named netns or nsenter is available."
+        )
+
+    do_ping  = test_type in ("ping",  "full")
+    do_tcp   = test_type in ("tcp",   "full")
+    do_udp   = test_type in ("udp",   "full")
+    do_trace = test_type in ("traceroute", "full")
+
+    # ── 1. Ping ──────────────────────────────────────────────────────
+    if do_ping and src_prefix:
+        try:
+            ping_cmd = src_prefix + [
+                "ping", "-c", "10", "-i", "0.2", "-W", "2", dst_ip
+            ]
+            ping_out = subprocess.run(
+                ping_cmd, capture_output=True, text=True, timeout=30
+            )
+            raw = ping_out.stdout + ping_out.stderr
+
+            rtt_m  = re.search(r"rtt min/avg/max/mdev = ([\d.]+)/([\d.]+)/([\d.]+)/([\d.]+)", raw)
+            loss_m = re.search(r"(\d+)% packet loss", raw)
+            pkt_m  = re.search(r"(\d+) packets transmitted, (\d+) received", raw)
+
+            if rtt_m:
+                result["ping"] = {
+                    "rtt_min_ms":      float(rtt_m.group(1)),
+                    "rtt_avg_ms":      float(rtt_m.group(2)),
+                    "rtt_max_ms":      float(rtt_m.group(3)),
+                    "rtt_mdev_ms":     float(rtt_m.group(4)),
+                    "packet_loss_pct": int(loss_m.group(1)) if loss_m else None,
+                    "tx": int(pkt_m.group(1)) if pkt_m else None,
+                    "rx": int(pkt_m.group(2)) if pkt_m else None,
+                    "raw": raw.strip()
+                }
+            else:
+                result["errors"].append(f"ping parse failed: {raw.strip()[:300]}")
+        except subprocess.TimeoutExpired:
+            result["errors"].append("ping timed out")
+        except Exception as exc:
+            result["errors"].append(f"ping error: {exc}")
+
+    # ── 2. TCP iperf3 ────────────────────────────────────────────────
+    if do_tcp and src_prefix and dst_prefix:
+        try:
+            server_cmd = dst_prefix + ["iperf3", "-s", "-1"]
+            server_proc = subprocess.Popen(
+                server_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            _time.sleep(0.6)
+
+            client_cmd = src_prefix + [
+                "iperf3", "-c", dst_ip, "-t", str(duration), "-J"
+            ]
+            client_out = subprocess.run(
+                client_cmd, capture_output=True, text=True, timeout=duration + 20
+            )
+            try:
+                data = _json.loads(client_out.stdout)
+                end  = data.get("end", {})
+                sent = end.get("sum_sent", {})
+                recv = end.get("sum_received", {})
+                result["iperf"] = {
+                    "mbps_sent":       round(sent.get("bits_per_second", 0) / 1e6, 2),
+                    "mbps_received":   round(recv.get("bits_per_second", 0) / 1e6, 2),
+                    "bytes_sent":      sent.get("bytes"),
+                    "bytes_received":  recv.get("bytes"),
+                    "retransmits":     sent.get("retransmits"),
+                    "duration_s":      duration,
+                }
+            except (_json.JSONDecodeError, KeyError, TypeError):
+                result["errors"].append(f"iperf3 TCP parse failed: {client_out.stdout[:200]}")
+            try:
+                server_proc.terminate()
+            except Exception:
+                pass
+        except subprocess.TimeoutExpired:
+            result["errors"].append("iperf3 TCP timed out")
+        except FileNotFoundError:
+            result["errors"].append("iperf3 not found — sudo apt install iperf3")
+        except Exception as exc:
+            result["errors"].append(f"iperf3 TCP error: {exc}")
+
+    # ── 3. UDP iperf3 (jitter & loss) ────────────────────────────────
+    if do_udp and src_prefix and dst_prefix:
+        try:
+            srv_cmd = dst_prefix + ["iperf3", "-s", "-1"]
+            srv_proc = subprocess.Popen(
+                srv_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            _time.sleep(0.6)
+
+            udp_cmd = src_prefix + [
+                "iperf3", "-c", dst_ip, "-u",
+                "-t", str(duration),
+                "-b", "100M",   # 100 Mbps UDP load
+                "-J"
+            ]
+            udp_out = subprocess.run(
+                udp_cmd, capture_output=True, text=True, timeout=duration + 20
+            )
+            try:
+                data = _json.loads(udp_out.stdout)
+                end  = data.get("end", {})
+                # UDP receiver summary is under sum (not sum_received)
+                summ = end.get("sum", {})
+                result["udp"] = {
+                    "jitter_ms":    summ.get("jitter_ms"),
+                    "lost_percent": summ.get("lost_percent"),
+                    "packets":      summ.get("packets"),
+                    "mbps": round(summ.get("bits_per_second", 0) / 1e6, 2),
+                }
+            except (_json.JSONDecodeError, KeyError, TypeError):
+                result["errors"].append(f"iperf3 UDP parse failed: {udp_out.stdout[:200]}")
+            try:
+                srv_proc.terminate()
+            except Exception:
+                pass
+        except subprocess.TimeoutExpired:
+            result["errors"].append("iperf3 UDP timed out")
+        except FileNotFoundError:
+            result["errors"].append("iperf3 not found — sudo apt install iperf3")
+        except Exception as exc:
+            result["errors"].append(f"iperf3 UDP error: {exc}")
+
+    # ── 4. Traceroute ────────────────────────────────────────────────
+    if do_trace and src_prefix:
+        try:
+            tr_cmd = src_prefix + [
+                "traceroute", "-n", "-m", "20", "-w", "2", "-q", "1", dst_ip
+            ]
+            tr_out = subprocess.run(
+                tr_cmd, capture_output=True, text=True, timeout=60
+            )
+            hops = []
+            for line in tr_out.stdout.splitlines():
+                # Lines look like: " 1  10.0.0.1  0.543 ms"  or  " 2  * * *"
+                hop_m = re.match(r"\s*(\d+)\s+([\d.*]+)\s+([\d.]+)\s+ms", line)
+                star_m = re.match(r"\s*(\d+)\s+\*", line)
+                if hop_m:
+                    hops.append({
+                        "hop": int(hop_m.group(1)),
+                        "ip":  hop_m.group(2),
+                        "host": hop_m.group(2),
+                        "rtt": float(hop_m.group(3)),
+                    })
+                elif star_m:
+                    hops.append({
+                        "hop": int(star_m.group(1)),
+                        "ip":  None,
+                        "host": None,
+                        "rtt": None,
+                    })
+            result["traceroute"] = {
+                "hops": hops,
+                "raw":  tr_out.stdout.strip()
+            }
+        except subprocess.TimeoutExpired:
+            result["errors"].append("traceroute timed out")
+        except FileNotFoundError:
+            result["errors"].append("traceroute not found — sudo apt install traceroute")
+        except Exception as exc:
+            result["errors"].append(f"traceroute error: {exc}")
+
+    return jsonify(result)
+
 class GARROController(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
