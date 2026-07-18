@@ -405,6 +405,22 @@ def run_speedtest():
 
     return jsonify(result)
 
+# ── City / Node label maps (used by get_network_state for UI display) ──────
+NSFNET_LABELS = {
+    1: "Seattle", 2: "Palo Alto", 3: "San Diego", 4: "Salt Lake City",
+    5: "Boulder", 6: "Lincoln", 7: "Houston", 8: "Champaign",
+    9: "Atlanta", 10: "Ann Arbor", 11: "Pittsburgh", 12: "Princeton",
+    13: "College Park", 14: "Ithaca",
+}
+GEANT2_LABELS = {
+    1: "London", 2: "Amsterdam", 3: "Frankfurt", 4: "Paris",
+    5: "Brussels", 6: "Geneva", 7: "Milan", 8: "Zurich",
+    9: "Vienna", 10: "Prague", 11: "Warsaw", 12: "Budapest",
+    13: "Bucharest", 14: "Athens", 15: "Istanbul", 16: "Zagreb",
+    17: "Ljubljana", 18: "Bratislava", 19: "Copenhagen", 20: "Stockholm",
+    21: "Helsinki", 22: "Tallinn", 23: "Riga", 24: "Vilnius",
+}
+
 class GARROController(app_manager.OSKenApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
@@ -678,6 +694,15 @@ class GARROController(app_manager.OSKenApp):
 
     def get_network_state(self) -> dict:
         """Build network state JSON for the AI plane."""
+        num_nodes = self.topology.number_of_nodes()
+        # Pick label map by node count
+        if num_nodes <= 14:
+            label_map = NSFNET_LABELS
+            topo_name = "nsfnet"
+        else:
+            label_map = GEANT2_LABELS
+            topo_name = "geant2"
+
         nodes = []
         for n in self.topology.nodes():
             stats = self.port_stats.get(n, {})
@@ -685,6 +710,7 @@ class GARROController(app_manager.OSKenApp):
             total_tx = sum(s.get("tx_bytes", 0) for s in stats.values())
             nodes.append({
                 "dpid": n,
+                "label": label_map.get(n, f"Node {n}"),
                 "cpu": 0.5,          # Placeholder — extend with SNMP
                 "buffer_occ": 0.3,
                 "ingress_rate": total_rx,
@@ -705,6 +731,7 @@ class GARROController(app_manager.OSKenApp):
 
         return {
             "timestamp": time.time(),
+            "topology": topo_name,
             "nodes": nodes,
             "edges": edges,
             "active_paths": self.active_paths,

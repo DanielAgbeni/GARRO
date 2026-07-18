@@ -1935,16 +1935,53 @@
         function buildInitialTopology(nodes, edges) {
             nodesDataset.clear();
             edgesDataset.clear();
+
+            // Build a dpid → city label lookup from backend data
+            const cityLabels = {};
+            nodes.forEach(n => { if (n.label) cityLabels[n.dpid] = n.label; });
+
             nodes.forEach(n => {
                 const dpid = n.dpid;
-                nodesDataset.add({ id: `s_${dpid}`, label: `SW ${dpid}`, shape: 'box', color: { background: COLOR_NODE, border: COLOR_NODE_BORDER } });
-                nodesDataset.add({ id: `h_${dpid}`, label: `H${dpid}`, shape: 'box', color: { background: COLOR_HOST, border: COLOR_NODE_BORDER } });
+                const city = cityLabels[dpid];
+                const swLabel = city ? `SW ${dpid}\n${city}` : `SW ${dpid}`;
+                nodesDataset.add({
+                    id: `s_${dpid}`, label: swLabel, shape: 'box',
+                    color: { background: COLOR_NODE, border: COLOR_NODE_BORDER },
+                    font: { color: COLOR_TEXT, size: 11, face: 'Inter', multi: 'md' }
+                });
+                nodesDataset.add({
+                    id: `h_${dpid}`, label: `H${dpid}`, shape: 'box',
+                    color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
+                    font: { color: COLOR_TEXT, size: 11, face: 'Inter' }
+                });
                 edgesDataset.add({ id: `link_h_${dpid}_s_${dpid}`, from: `h_${dpid}`, to: `s_${dpid}`, color: { color: COLOR_LINK_INACTIVE }, dashes: true });
             });
+
+            // Build an edge metadata lookup (keyed both ways for undirected matching)
+            const edgeMeta = {};
+            edges.forEach(e => {
+                edgeMeta[`${e.src}_${e.dst}`] = e;
+                edgeMeta[`${e.dst}_${e.src}`] = e;
+            });
+
             edges.forEach(e => {
                 const id = `edge_${e.src}_${e.dst}`;
-                if (!edgesDataset.get(id)) edgesDataset.add({ id, from: `s_${e.src}`, to: `s_${e.dst}`, color: { color: COLOR_LINK_INACTIVE } });
+                if (!edgesDataset.get(id)) {
+                    const delayMs = e.delay != null ? `${e.delay}ms` : '';
+                    const bwLabel = e.bandwidth >= 10000 ? `${e.bandwidth / 1000}Gbps`
+                                  : e.bandwidth >= 1000 ? `${e.bandwidth / 1000}Gbps`
+                                  : `${e.bandwidth}Mbps`;
+                    const edgeLabel = delayMs && bwLabel ? `${delayMs} | ${bwLabel}` : (delayMs || bwLabel);
+                    edgesDataset.add({
+                        id, from: `s_${e.src}`, to: `s_${e.dst}`,
+                        color: { color: COLOR_LINK_INACTIVE },
+                        label: edgeLabel,
+                        font: { size: 8, color: '#71717a', strokeWidth: 0, face: 'Inter', align: 'middle' }
+                    });
+                }
             });
+            // Store edge metadata globally for tooltip use
+            window._garroEdgeMeta = edgeMeta;
             if (network) network.fit();
         }
 
