@@ -215,16 +215,22 @@ def run_speedtest():
     # ─────────────────────────────────────────────────────────────────
     def _get_ns_prefix(hostname):
         # Use named network namespace created by NamespacedHost in mininet_nsfnet.py.
-        # This avoids scanning /proc (which requires root) entirely.
-        try:
-            test = subprocess.run(
-                ["ip", "netns", "exec", hostname, "true"],
-                capture_output=True, timeout=2
-            )
-            if test.returncode == 0:
-                return ["ip", "netns", "exec", hostname]
-        except Exception:
-            pass
+        # setns() requires CAP_SYS_ADMIN; try without sudo first (controller may be
+        # root), then fall back to sudo (requires NOPASSWD sudoers entry for
+        # 'ip netns exec').
+        for prefix in (
+            ["ip", "netns", "exec", hostname],
+            ["sudo", "-n", "ip", "netns", "exec", hostname],
+        ):
+            try:
+                test = subprocess.run(
+                    prefix + ["true"],
+                    capture_output=True, timeout=2
+                )
+                if test.returncode == 0:
+                    return prefix
+            except Exception:
+                pass
 
         return None  # Namespace not found — topology may not use NamespacedHost
 
