@@ -9,10 +9,46 @@ Start the OS-Ken controller first:
     python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links
 """
 from mininet.net import Mininet
-from mininet.node import OVSKernelSwitch, RemoteController
+from mininet.node import OVSKernelSwitch, RemoteController, Host
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
+import subprocess
+
+
+class NamespacedHost(Host):
+    """Host subclass that registers itself as a named network namespace.
+
+    Mininet creates each host inside an isolated network namespace but
+    does NOT bind-mount it under /run/netns by default.  This means
+    ``ip netns exec <hostname>`` fails, forcing the speedtest code to
+    fall back to scanning /proc (which requires root).
+
+    By overriding setup() we bind-mount the host's namespace into
+    /run/netns/<hostname> so the normal ``ip netns exec`` path works
+    without any elevated privileges in the controller process.
+    """
+
+    def setup(self):
+        super().setup()
+        # Bind-mount this host's netns into /run/netns/<name>
+        subprocess.run(["mkdir", "-p", "/run/netns"], check=False)
+        netns_path = f"/run/netns/{self.name}"
+        # The host process namespace is at /proc/<pid>/ns/net
+        proc_ns = f"/proc/{self.pid}/ns/net"
+        subprocess.run(
+            ["sudo", "touch", netns_path], check=False
+        )
+        subprocess.run(
+            ["sudo", "mount", "--bind", proc_ns, netns_path], check=False
+        )
+
+    def terminate(self):
+        # Clean up the bind-mount when the host exits
+        netns_path = f"/run/netns/{self.name}"
+        subprocess.run(["sudo", "umount", netns_path], check=False)
+        subprocess.run(["sudo", "rm", "-f", netns_path], check=False)
+        super().terminate()
 
 
 def build_nsfnet():
@@ -22,6 +58,7 @@ def build_nsfnet():
         controller=RemoteController,
         switch=OVSKernelSwitch,
         link=TCLink,
+        host=NamespacedHost,
         autoSetMacs=True,
     )
 

@@ -170,7 +170,6 @@ def run_speedtest():
     """
     import subprocess
     import re
-    import glob
     import json as _json
     import time as _time
 
@@ -215,7 +214,8 @@ def run_speedtest():
     # network namespace, or None if we can't find it.
     # ─────────────────────────────────────────────────────────────────
     def _get_ns_prefix(hostname):
-        # Try 1: ip netns exec (Mininet ≥ 2.3 often creates named netns)
+        # Use named network namespace created by NamespacedHost in mininet_nsfnet.py.
+        # This avoids scanning /proc (which requires root) entirely.
         try:
             test = subprocess.run(
                 ["ip", "netns", "exec", hostname, "true"],
@@ -226,21 +226,7 @@ def run_speedtest():
         except Exception:
             pass
 
-        # Try 2: locate PID via /proc/*/net/dev by looking for h1-eth0
-        iface = f"{hostname}-eth0"
-        try:
-            for net_dev in glob.glob("/proc/*/net/dev"):
-                try:
-                    with open(net_dev) as f:
-                        if iface in f.read():
-                            pid = net_dev.split("/")[2]
-                            return ["nsenter", "-t", pid, "-n", "--"]
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        return None  # Cannot determine namespace
+        return None  # Namespace not found — topology may not use NamespacedHost
 
     src_prefix = _get_ns_prefix(src_host)
     dst_prefix = _get_ns_prefix(dst_host)
