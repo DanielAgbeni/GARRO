@@ -24,30 +24,37 @@ class NamespacedHost(Host):
     ``ip netns exec <hostname>`` fails, forcing the speedtest code to
     fall back to scanning /proc (which requires root).
 
-    By overriding setup() we bind-mount the host's namespace into
-    /run/netns/<hostname> so the normal ``ip netns exec`` path works
-    without any elevated privileges in the controller process.
+    We override startShell() — called after the host process is spawned
+    and self.pid is available — to bind-mount the namespace into
+    /run/netns/<hostname> so ``ip netns exec <hostname>`` works without
+    elevated privileges in the controller process.
+
+    setup() is intentionally left as a classmethod passthrough so
+    Mininet's checkSetup() call (cls.setup()) does not break.
     """
 
-    def setup(self):
-        super().setup()
-        # Bind-mount this host's netns into /run/netns/<name>
+    @classmethod
+    def setup(cls):
+        # Mininet calls cls.setup() as a class method during sanity checks.
+        # Delegate to the parent class method cleanly.
+        Host.setup()
+
+    def startShell(self, *args, **kwargs):
+        super().startShell(*args, **kwargs)
+        # self.pid is now valid — bind-mount the netns
         subprocess.run(["mkdir", "-p", "/run/netns"], check=False)
         netns_path = f"/run/netns/{self.name}"
-        # The host process namespace is at /proc/<pid>/ns/net
         proc_ns = f"/proc/{self.pid}/ns/net"
+        subprocess.run(["touch", netns_path], check=False)
         subprocess.run(
-            ["sudo", "touch", netns_path], check=False
-        )
-        subprocess.run(
-            ["sudo", "mount", "--bind", proc_ns, netns_path], check=False
+            ["mount", "--bind", proc_ns, netns_path], check=False
         )
 
     def terminate(self):
         # Clean up the bind-mount when the host exits
         netns_path = f"/run/netns/{self.name}"
-        subprocess.run(["sudo", "umount", netns_path], check=False)
-        subprocess.run(["sudo", "rm", "-f", netns_path], check=False)
+        subprocess.run(["umount", netns_path], check=False)
+        subprocess.run(["rm", "-f", netns_path], check=False)
         super().terminate()
 
 
