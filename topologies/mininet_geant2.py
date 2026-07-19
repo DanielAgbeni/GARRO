@@ -12,7 +12,10 @@ from mininet.node import OVSKernelSwitch, RemoteController
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
-from topologies.namespaced_host import NamespacedHost
+try:
+    from topologies.namespaced_host import NamespacedHost
+except ModuleNotFoundError:
+    from namespaced_host import NamespacedHost
 
 
 def build_geant2():
