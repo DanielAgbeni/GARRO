@@ -12,6 +12,7 @@ from mininet.node import OVSKernelSwitch, RemoteController
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
+from topologies.namespaced_host import NamespacedHost
 
 
 def build_geant2():
@@ -21,6 +22,7 @@ def build_geant2():
         controller=RemoteController,
         switch=OVSKernelSwitch,
         link=TCLink,
+        host=NamespacedHost,
         autoSetMacs=True,
     )
 

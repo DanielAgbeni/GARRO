@@ -9,53 +9,11 @@ Start the OS-Ken controller first:
     python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links
 """
 from mininet.net import Mininet
-from mininet.node import OVSKernelSwitch, RemoteController, Host
+from mininet.node import OVSKernelSwitch, RemoteController
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
-import subprocess
-
-
-class NamespacedHost(Host):
-    """Host subclass that registers itself as a named network namespace.
-
-    Mininet creates each host inside an isolated network namespace but
-    does NOT bind-mount it under /run/netns by default.  This means
-    ``ip netns exec <hostname>`` fails, forcing the speedtest code to
-    fall back to scanning /proc (which requires root).
-
-    We override startShell() — called after the host process is spawned
-    and self.pid is available — to bind-mount the namespace into
-    /run/netns/<hostname> so ``ip netns exec <hostname>`` works without
-    elevated privileges in the controller process.
-
-    setup() is intentionally left as a classmethod passthrough so
-    Mininet's checkSetup() call (cls.setup()) does not break.
-    """
-
-    @classmethod
-    def setup(cls):
-        # Mininet calls cls.setup() as a class method during sanity checks.
-        # Delegate to the parent class method cleanly.
-        Host.setup()
-
-    def startShell(self, *args, **kwargs):
-        super().startShell(*args, **kwargs)
-        # self.pid is now valid — bind-mount the netns
-        subprocess.run(["mkdir", "-p", "/run/netns"], check=False)
-        netns_path = f"/run/netns/{self.name}"
-        proc_ns = f"/proc/{self.pid}/ns/net"
-        subprocess.run(["touch", netns_path], check=False)
-        subprocess.run(
-            ["mount", "--bind", proc_ns, netns_path], check=False
-        )
-
-    def terminate(self):
-        # Clean up the bind-mount when the host exits
-        netns_path = f"/run/netns/{self.name}"
-        subprocess.run(["umount", netns_path], check=False)
-        subprocess.run(["rm", "-f", netns_path], check=False)
-        super().terminate()
+from topologies.namespaced_host import NamespacedHost
 
 
 def build_nsfnet():

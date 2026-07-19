@@ -448,6 +448,10 @@ class GARROController(app_manager.OSKenApp):
         # in the looped mesh topology without permanently silencing hosts.
         self.flooded_srcs: dict = {}
 
+        # Proactive forwarding state
+        self._proactive_installed = False   # True once proactive flows are in
+        self._topo_stable_time = None       # Timestamp of last topology change
+
         # Telemetry polling thread (every 2 seconds)
         self.monitor_thread = hub.spawn(self._monitor_loop)
 
@@ -456,6 +460,10 @@ class GARROController(app_manager.OSKenApp):
 
         # Periodic flood-set clearer (every 30 seconds)
         self.flood_clear_thread = hub.spawn(self._clear_flooded_srcs)
+
+        # Topology stabilization watcher — installs proactive flows once
+        # no new switches/links appear for a few seconds
+        self._topo_watcher_thread = hub.spawn(self._topo_stabilisation_watcher)
 
     def _run_flask_server(self):
         """Runs the Flask REST API on eventlet's WSGI server."""
@@ -492,14 +500,17 @@ class GARROController(app_manager.OSKenApp):
     @set_ev_cls(topo_event.EventSwitchEnter)
     def switch_enter(self, ev):
         self._update_topology()
+        self._mark_topo_changed()
 
     @set_ev_cls(topo_event.EventLinkAdd)
     def link_add(self, ev):
         self._update_topology()
+        self._mark_topo_changed()
 
     @set_ev_cls(topo_event.EventLinkDelete)
     def link_delete(self, ev):
         self._update_topology()
+        self._mark_topo_changed()
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -632,6 +643,136 @@ class GARROController(app_manager.OSKenApp):
                 utilization=0.0,
                 packet_loss=0.0,
             )
+
+    def _mark_topo_changed(self):
+        """Record that the topology just changed; reset proactive state."""
+        self._topo_stable_time = time.time()
+        self._proactive_installed = False
+
+    def _topo_stabilisation_watcher(self):
+        """Wait until topology stops changing, then install proactive flows.
+
+        After each topology event we record the timestamp.  This thread
+        checks every 2 s whether 5 seconds have passed without changes.
+        Once stable, it computes shortest paths and pushes forwarding
+        rules for every host pair — eliminating the need for flood-based
+        MAC learning which fails in dense mesh topologies like GEANT2.
+        """
+        STABLE_WAIT = 5          # seconds of quiet before we act
+        while True:
+            hub.sleep(2)
+            if self._proactive_installed:
+                continue
+            if self._topo_stable_time is None:
+                continue
+            if time.time() - self._topo_stable_time < STABLE_WAIT:
+                continue
+            # Topology has been stable long enough — install proactive flows
+            n_nodes = self.topology.number_of_nodes()
+            n_edges = self.topology.number_of_edges()
+            if n_nodes == 0:
+                continue
+            self.logger.info(
+                f"[GARRO] Topology stable ({n_nodes} nodes, {n_edges} edges). "
+                f"Installing proactive shortest-path flows..."
+            )
+            try:
+                self._install_proactive_flows()
+                self._proactive_installed = True
+                self.logger.info(
+                    "[GARRO] Proactive flows installed successfully."
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"[GARRO] Proactive flow installation failed: {e}"
+                )
+
+    def _install_proactive_flows(self):
+        """Compute shortest paths and install L2+L3 forwarding for all pairs.
+
+        For each destination host (connected to switch N on port 1):
+          - At switch N itself: deliver to port 1 (local host).
+          - At every other switch: forward towards next hop on the
+            shortest path to switch N.
+
+        Both IP-match (priority 10) and MAC-match (priority 10) rules
+        are installed so that ARP replies and IP data traffic are both
+        forwarded correctly without flooding.
+        """
+        # Build an undirected version for shortest-path computation
+        G = self.topology.to_undirected()
+        nodes = sorted(G.nodes())
+
+        # Pre-compute all-pairs shortest paths (node lists)
+        all_paths = dict(nx.all_pairs_shortest_path(G))
+
+        for dst_dpid in nodes:
+            # Host i is connected to switch i on port 1
+            # Host IP = 10.0.0.<dpid>, MAC = 00:00:00:00:00:<dpid hex>
+            dst_ip = f"10.0.0.{dst_dpid}"
+            dst_mac = f"00:00:00:00:00:{dst_dpid:02x}"
+
+            for src_dpid in nodes:
+                if src_dpid == dst_dpid:
+                    # Local delivery: traffic for this switch's own host
+                    dp = self.datapaths.get(src_dpid)
+                    if dp is None:
+                        continue
+                    parser = dp.ofproto_parser
+                    # IP-based rule
+                    match_ip = parser.OFPMatch(
+                        eth_type=0x0800, ipv4_dst=dst_ip
+                    )
+                    actions = [parser.OFPActionOutput(1)]  # host port
+                    self._add_flow(dp, 10, match_ip, actions)
+                    # MAC-based rule (for ARP replies)
+                    match_mac = parser.OFPMatch(eth_dst=dst_mac)
+                    self._add_flow(dp, 10, match_mac, actions)
+                    continue
+
+                path = all_paths.get(src_dpid, {}).get(dst_dpid)
+                if path is None:
+                    self.logger.warning(
+                        f"[GARRO] No path from {src_dpid} to {dst_dpid}"
+                    )
+                    continue
+
+                # Install a forwarding rule at each hop along the path
+                for idx in range(len(path) - 1):
+                    current = path[idx]
+                    nxt = path[idx + 1]
+                    dp = self.datapaths.get(current)
+                    if dp is None:
+                        continue
+                    parser = dp.ofproto_parser
+
+                    # Find the output port from 'current' towards 'nxt'
+                    edge = self.topology.edges.get((current, nxt))
+                    if edge is None:
+                        # Try reverse direction
+                        edge_rev = self.topology.edges.get((nxt, current))
+                        if edge_rev is None:
+                            continue
+                        out_port = edge_rev["dst_port"]
+                    else:
+                        out_port = edge["src_port"]
+
+                    actions = [parser.OFPActionOutput(out_port)]
+
+                    # IP-based forwarding (data traffic)
+                    match_ip = parser.OFPMatch(
+                        eth_type=0x0800, ipv4_dst=dst_ip
+                    )
+                    self._add_flow(dp, 10, match_ip, actions)
+
+                    # MAC-based forwarding (ARP replies)
+                    match_mac = parser.OFPMatch(eth_dst=dst_mac)
+                    self._add_flow(dp, 10, match_mac, actions)
+
+        self.logger.info(
+            f"[GARRO] Proactive flows: {len(nodes)} hosts, "
+            f"{len(nodes) * (len(nodes) - 1)} paths installed."
+        )
 
     # ── Flow Installation ──────────────────────────────────────────────────
 
