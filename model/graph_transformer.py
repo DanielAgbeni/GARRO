@@ -23,7 +23,7 @@ Fixes applied
 """
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
