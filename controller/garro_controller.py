@@ -445,6 +445,7 @@ class GARROController(app_manager.OSKenApp):
         self.mac_to_port: dict = defaultdict(dict)  # dpid → mac → port
         self.pending_flows: list = []       # Flow rules waiting to be installed
         self.active_paths: dict = {}        # "src_ip->dst_ip" -> dpid list
+        self.fallback_paths: dict = {}      # "src_ip->dst_ip" -> bool (True if Dijkstra fast-path)
         self.current_intent: str = "Balance load across all links while maintaining reasonable latency for mixed traffic."
         self.current_weights: dict = {"alpha1": 0.4, "alpha2": 0.3, "alpha3": 0.2, "alpha4": 0.1}
         self.intent_status: str = "success"   # pending | processing | success | error
@@ -816,7 +817,7 @@ class GARROController(app_manager.OSKenApp):
         return []
 
     def install_path_flow(self, path: list, src_ip: str, dst_ip: str,
-                          priority: int = 100):
+                          priority: int = 100, is_fallback: bool = False):
         """
         Install flow rules along a computed path.
         path: list of dpid values [dpid1, dpid2, ..., dpidN]
@@ -848,11 +849,13 @@ class GARROController(app_manager.OSKenApp):
             self._add_flow(dp, priority, match, actions,
                            idle_timeout=60, hard_timeout=120)
 
-        # Track this path as active
-        self.active_paths[f"{src_ip}->{dst_ip}"] = path
+        # Track this path as active and record fallback status
+        flow_key = f"{src_ip}->{dst_ip}"
+        self.active_paths[flow_key] = path
+        self.fallback_paths[flow_key] = is_fallback
 
         self.logger.info(
-            f"[GARRO] Installed path: {path} for {src_ip} → {dst_ip}"
+            f"[GARRO] Installed path ({'Fast-Path Dijkstra' if is_fallback else 'PPO AI'}): {path} for {src_ip} → {dst_ip}"
         )
 
     # ── REST API Data Builder ──────────────────────────────────────────────
@@ -900,6 +903,7 @@ class GARROController(app_manager.OSKenApp):
             "nodes": nodes,
             "edges": edges,
             "active_paths": self.active_paths,
+            "fallback_paths": self.fallback_paths,
             "current_intent": self.current_intent,
             "current_weights": self.current_weights,
             "intent_status": self.intent_status,

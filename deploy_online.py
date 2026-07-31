@@ -80,11 +80,12 @@ async def install_flow(
     src_ip: str,
     dst_ip: str,
     session: aiohttp.ClientSession,
+    is_fallback: bool = False,
     verbose: bool = False,
 ) -> None:
     """POST computed path to OS-Ken controller (non-blocking)."""
     dpid_path = [node + 1 for node in path]
-    payload   = {"path": dpid_path, "src_ip": src_ip, "dst_ip": dst_ip}
+    payload   = {"path": dpid_path, "src_ip": src_ip, "dst_ip": dst_ip, "is_fallback": is_fallback}
     try:
         async with session.post(
             f"{CONTROLLER_URL}/garro/flow",
@@ -93,7 +94,8 @@ async def install_flow(
         ) as resp:
             if resp.status == 200:
                 if verbose:
-                    print(f"[Deploy] Flow installed: {dpid_path} | {src_ip}→{dst_ip}")
+                    mode_str = "Fast-Path Dijkstra Fallback" if is_fallback else "PPO AI"
+                    print(f"[Deploy] Flow installed ({mode_str}): {dpid_path} | {src_ip}→{dst_ip}")
             else:
                 text = await resp.text()
                 print(f"[Deploy] Flow install failed ({resp.status}): {text}")
@@ -339,6 +341,7 @@ async def main(args):
                     if not candidates:
                         continue
 
+                    is_fallback = False
                     try:
                         # Wrap action selection with timeout and exception handler for Self-Healing Router (SHR) failover
                         action, _, _ = await asyncio.wait_for(
@@ -350,6 +353,7 @@ async def main(args):
                             else candidates[0]
                         )
                     except Exception as ai_exc:
+                        is_fallback = True
                         print(f"[Deploy/SHR] AI Decision Plane exception/timeout ({ai_exc}) — triggering Fast-Path Dijkstra Fallback for {src_ip}→{dst_ip}")
                         try:
                             selected_path = nx.dijkstra_path(G, src_node, dst_node, weight="delay")
@@ -363,15 +367,16 @@ async def main(args):
                     verbose = False
                     if old_path != dpid_path:
                         verbose = True
+                        mode_label = "Fast-Path Dijkstra" if is_fallback else "PPO AI"
                         if old_path is not None:
-                            print(f"[Deploy] Path CHANGED for {src_ip}→{dst_ip}: {old_path} → {dpid_path}")
+                            print(f"[Deploy] Path CHANGED ({mode_label}) for {src_ip}→{dst_ip}: {old_path} → {dpid_path}")
                         else:
-                            print(f"[Deploy] Path INITIALIZED for {src_ip}→{dst_ip}: {dpid_path}")
+                            print(f"[Deploy] Path INITIALIZED ({mode_label}) for {src_ip}→{dst_ip}: {dpid_path}")
                         last_paths[pair_key] = dpid_path
 
                     # 3. Install flow rules concurrently
                     flow_tasks.append(
-                        install_flow(selected_path, src_ip, dst_ip, session, verbose=verbose)
+                        install_flow(selected_path, src_ip, dst_ip, session, is_fallback=is_fallback, verbose=verbose)
                     )
 
                 if flow_tasks:

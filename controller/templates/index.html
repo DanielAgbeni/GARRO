@@ -1919,8 +1919,8 @@
                     if (label) setTopologyLabel(label, false);
                 }
                 const flowCount = state.active_paths ? Object.keys(state.active_paths).length : 0;
-                updateFlowsList(state.active_paths);
-                highlightActivePaths(state.active_paths);
+                updateFlowsList(state.active_paths, state.fallback_paths);
+                highlightActivePaths(state.active_paths, state.fallback_paths);
                 pushSample(w, flowCount, state.current_intent || '');
             } catch (err) {
                 console.error("State fetch error:", err); }
@@ -1985,7 +1985,7 @@
             if (network) network.fit();
         }
 
-        function updateFlowsList(activePaths) {
+        function updateFlowsList(activePaths, fallbackPaths) {
             const container = document.getElementById('flow-list');
             if (!activePaths || Object.keys(activePaths).length === 0) {
                 container.innerHTML = `<div class="text-muted">No flows detected. Ping hosts to initiate routing.</div>`;
@@ -1993,11 +1993,15 @@
             }
             let html = "";
             for (const [demand, path] of Object.entries(activePaths)) {
+                const isFallback = fallbackPaths && fallbackPaths[demand];
+                const badgeHtml = isFallback
+                    ? `<span class="badge" style="font-size: 10px; background-color: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4);">⚡ Fast-Path (Dijkstra)</span>`
+                    : `<span class="badge" style="font-size: 10px; background-color: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4);">🤖 PPO AI</span>`;
                 html += `
                     <div class="flow-card">
                         <div class="flow-header">
                             <span style="font-weight: 500; font-size: 13px;">${demand.replace('->', ' ➔ ')}</span>
-                            <span class="badge" style="font-size: 10px;">Active</span>
+                            ${badgeHtml}
                         </div>
                         <div class="flow-route">Path: [${path.join(' → ')}]</div>
                     </div>
@@ -2006,16 +2010,18 @@
             container.innerHTML = html;
         }
 
-        function highlightActivePaths(activePaths) {
+        function highlightActivePaths(activePaths, fallbackPaths) {
             edgesDataset.forEach(edge => {
                 const isHost = edge.id.startsWith('link_h_');
                 edgesDataset.update({ id: edge.id, color: { color: COLOR_LINK_INACTIVE }, width: 1, dashes: isHost });
             });
             if (!activePaths) return;
             for (const [demand, path] of Object.entries(activePaths)) {
+                const isFallback = fallbackPaths && fallbackPaths[demand];
+                const activeColor = isFallback ? '#f59e0b' : COLOR_LINK_ACTIVE;
                 for (let i = 0; i < path.length - 1; i++) {
                     const match = edgesDataset.get(`edge_${path[i]}_${path[i+1]}`) || edgesDataset.get(`edge_${path[i+1]}_${path[i]}`);
-                    if (match) edgesDataset.update({ id: match.id, color: { color: COLOR_LINK_ACTIVE }, width: 3 });
+                    if (match) edgesDataset.update({ id: match.id, color: { color: activeColor }, width: 3 });
                 }
             }
         }
