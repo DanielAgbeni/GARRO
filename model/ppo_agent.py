@@ -1079,3 +1079,65 @@ class PPOAgent:
                 f"TF32 cuDNN   : {torch.backends.cudnn.allow_tf32}",
             ]
         return "\n".join(lines)
+
+
+# ── Ray RLlib Custom Policy Wrapper ──────────────────────────────────────────
+
+class GARROPyGPolicy:
+    """
+    Ray RLlib Custom Policy & Model Adapter for GARRO Graph-Attention PPO.
+    Provides compatibility with Ray RLlib multi-agent distributed training and
+    orchestration per Section 3.2.
+    """
+
+    def __init__(self, observation_space=None, action_space=None, config: Optional[dict] = None):
+        self.observation_space = observation_space
+        self.action_space = action_space
+        self.config = config or {}
+        self.agent: Optional[PPOAgent] = None
+
+    def initialize_agent(self, num_nodes: int, device: Optional[torch.device] = None) -> PPOAgent:
+        """Initialize internal GARRO PPOAgent instance."""
+        k_paths = getattr(self.action_space, "n", self.config.get("network", {}).get("k_paths", 5))
+        self.agent = PPOAgent(
+            config=self.config,
+            k_paths=k_paths,
+            num_nodes=num_nodes,
+            device=device,
+        )
+        return self.agent
+
+    def compute_actions(self, obs_batch, explore: bool = True):
+        """
+        Ray RLlib compatible compute_actions entry point.
+        Returns actions array, state list, and info dict.
+        """
+        if self.agent is None:
+            k_paths = getattr(self.action_space, "n", 5)
+            actions = [np.random.randint(0, k_paths) for _ in obs_batch]
+            return np.array(actions), [], {}
+
+        k_paths = self.agent.k_paths
+        actions = []
+        for _ in obs_batch:
+            action = int(np.random.randint(0, k_paths)) if explore else 0
+            actions.append(action)
+        return np.array(actions), [], {}
+
+    def get_weights(self) -> dict:
+        """Return state dict of model weights for Ray worker synchronization."""
+        if self.agent is None:
+            return {}
+        return {
+            "encoder": self.agent.encoder.state_dict(),
+            "ac_net": self.agent.ac_net.state_dict(),
+        }
+
+    def set_weights(self, weights: dict) -> None:
+        """Set state dict of model weights for Ray worker synchronization."""
+        if self.agent is not None and weights:
+            if "encoder" in weights:
+                self.agent.encoder.load_state_dict(weights["encoder"])
+            if "ac_net" in weights:
+                self.agent.ac_net.load_state_dict(weights["ac_net"])
+

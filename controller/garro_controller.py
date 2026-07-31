@@ -114,11 +114,19 @@ def install_flow():
         return jsonify({"error": "Controller not initialized"}), 503
     try:
         body = request.get_json(force=True)
-        path = body["path"]        # List of dpid values
+        path = body.get("path", [])
         src_ip = body["src_ip"]
         dst_ip = body["dst_ip"]
+        is_fallback = False
+        if not path or len(path) < 2:
+            # Self-Healing Router (SHR) Fast-Path Fallback
+            src_dpid = int(src_ip.split(".")[-1])
+            dst_dpid = int(dst_ip.split(".")[-1])
+            path = controller_instance.compute_dijkstra_fallback_path(src_dpid, dst_dpid)
+            is_fallback = True
+
         controller_instance.install_path_flow(path, src_ip, dst_ip)
-        return jsonify({"status": "ok"})
+        return jsonify({"status": "ok", "path_used": path, "fallback": is_fallback})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -790,6 +798,22 @@ class GARROController(app_manager.OSKenApp):
             hard_timeout=hard_timeout,
         )
         datapath.send_msg(mod)
+
+    def compute_dijkstra_fallback_path(self, src_dpid: int, dst_dpid: int) -> list:
+        """
+        Self-Healing Router (SHR) Fast-Path Fallback Engine.
+        Computes a deterministic Dijkstra shortest path based on current link delays.
+        Used as immediate failover if AI Decision Plane fails or times out.
+        """
+        try:
+            G = self.topology.to_undirected()
+            if src_dpid in G and dst_dpid in G:
+                path = nx.dijkstra_path(G, src_dpid, dst_dpid, weight="delay")
+                self.logger.info(f"[GARRO/SHR] Fast-Path Dijkstra Fallback computed path: {path}")
+                return path
+        except Exception as e:
+            self.logger.error(f"[GARRO/SHR] Fast-Path Dijkstra Fallback error: {e}")
+        return []
 
     def install_path_flow(self, path: list, src_ip: str, dst_ip: str,
                           priority: int = 100):

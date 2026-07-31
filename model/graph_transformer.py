@@ -34,6 +34,10 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.nn import TransformerConv
 
 
+from torch_geometric.nn import MessagePassing, global_mean_pool
+from torch_geometric.utils import softmax
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 NODE_FEAT_DIM = 4   # [cpu, buffer_occ, ingress_rate, egress_rate]
@@ -58,35 +62,124 @@ def _edge_attr_from_dict(d: dict) -> List[float]:
     ]
 
 
-# ── Encoder ───────────────────────────────────────────────────────────────────
+# ── Spatial Transformer Layer with Learned Spatial Bias ψ(e_ij) ─────────────
 
-class GraphTransformerEncoder(nn.Module):
-    """
-    Multi-layer Graph Transformer with virtual star node.
+class SpatialTransformerConv(MessagePassing):
+    r"""
+    Graph Transformer Layer incorporating learned spatial attention bias ψ(e_ij).
 
-    Parameters
-    ----------
-    hidden_dim : int   Embedding / latent dimension (default 128).
-    num_heads  : int   Attention heads per TransformerConv layer (default 4).
-    num_layers : int   Stacked TransformerConv layers (default 3).
-    dropout    : float Dropout rate inside TransformerConv (default 0.1).
-    max_nodes  : int   ③ Exact node count per graph (real + star).
-                        Must be set to num_topology_nodes + 1.
-                       NSFNET = 14 real + 1 star = 15.
-                       Every graph produced by GraphConverter must have this
-                       many nodes — this is what makes the view+mean safe.
-
-    Forward
-    -------
-    forward(data) → Tensor[B, hidden_dim]
-
-    No num_graphs argument needed.  B is derived from x.shape[0] // max_nodes.
-    The caller (ppo_agent.py) does not need to change.
+    Strictly matching Equation 2.4.3 in the proposal paper:
+    A_{ij}^{(h)} = exp( (q_i^{(h)} (k_j^{(h)})^T) / sqrt(d_h) + \psi(e_{ij}) ) /
+                   sum_{u in V} exp(...)
     """
 
     def __init__(
         self,
-        max_nodes:  int,          # ③ num_topology_nodes + 1 (real + star)
+        in_channels: int,
+        out_channels: int,
+        heads: int = 4,
+        edge_dim: int = 4,
+        max_dist: int = 32,
+        dropout: float = 0.1,
+    ):
+        super().__init__(node_dim=0, aggr="add")
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.edge_dim = edge_dim
+        self.dropout = dropout
+
+        self.lin_q = nn.Linear(in_channels, heads * out_channels)
+        self.lin_k = nn.Linear(in_channels, heads * out_channels)
+        self.lin_v = nn.Linear(in_channels, heads * out_channels)
+
+        self.lin_edge = nn.Linear(edge_dim, heads * out_channels)
+        # Learned spatial bias embedding mapping shortest-path hop distances to scalar bias per head
+        self.spatial_bias = nn.Embedding(max_dist + 2, heads)
+
+        self.lin_skip = nn.Linear(in_channels, heads * out_channels)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
+        hop_dist: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        H, C = self.heads, self.out_channels
+
+        query = self.lin_q(x).view(-1, H, C)
+        key   = self.lin_k(x).view(-1, H, C)
+        value = self.lin_v(x).view(-1, H, C)
+
+        # Default hop distance: 1 for direct edges if not explicitly provided
+        if hop_dist is None:
+            hop_dist = torch.ones(edge_index.size(1), dtype=torch.long, device=x.device)
+
+        out = self.propagate(
+            edge_index,
+            query=query,
+            key=key,
+            value=value,
+            edge_attr=edge_attr,
+            hop_dist=hop_dist,
+            size=None,
+        )
+
+        out = out.view(-1, H * C)
+        out = out + self.lin_skip(x)
+        return out
+
+    def message(
+        self,
+        query_i: torch.Tensor,
+        key_j: torch.Tensor,
+        value_j: torch.Tensor,
+        edge_attr: torch.Tensor,
+        hop_dist: torch.Tensor,
+        index: torch.Tensor,
+        ptr: Optional[torch.Tensor],
+        size_i: Optional[int],
+    ) -> torch.Tensor:
+        H, C = self.heads, self.out_channels
+
+        # Scaled dot-product query-key attention: (q_i * k_j) / sqrt(d_h)
+        alpha = (query_i * key_j).sum(dim=-1) / np.sqrt(C)   # [E, H]
+
+        # Edge feature projection
+        edge_emb = self.lin_edge(edge_attr).view(-1, H, C).sum(dim=-1)  # [E, H]
+        alpha = alpha + edge_emb
+
+        # Spatial bias embedding \psi(e_ij) matching Equation 2.4.3
+        psi_bias = self.spatial_bias(torch.clamp(hop_dist, 0, self.spatial_bias.num_embeddings - 1))  # [E, H]
+        alpha = alpha + psi_bias
+
+        # Softmax over incoming neighbors
+        alpha = softmax(alpha, index, ptr, num_nodes=size_i)
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+
+        return value_j * alpha.unsqueeze(-1)   # [E, H, C]
+
+
+# ── Encoder ───────────────────────────────────────────────────────────────────
+
+class GraphTransformerEncoder(nn.Module):
+    """
+    Multi-layer Graph Transformer with virtual star node, spatial attention bias,
+    and PyG global_mean_pool for dynamic topology execution.
+
+    Parameters
+    ----------
+    max_nodes  : Optional[int] Node count per graph (real + star). Optional for zero-shot dynamic pooling.
+    hidden_dim : int   Embedding / latent dimension (default 128).
+    num_heads  : int   Attention heads per SpatialTransformerConv layer (default 4).
+    num_layers : int   Stacked SpatialTransformerConv layers (default 3).
+    dropout    : float Dropout rate inside SpatialTransformerConv (default 0.1).
+    """
+
+    def __init__(
+        self,
+        max_nodes:  Optional[int] = None,
         hidden_dim: int   = 128,
         num_heads:  int   = 4,
         num_layers: int   = 3,
@@ -100,13 +193,12 @@ class GraphTransformerEncoder(nn.Module):
         self.node_embed = nn.Linear(NODE_FEAT_DIM + 1, hidden_dim)
 
         self.conv_layers = nn.ModuleList([
-            TransformerConv(
+            SpatialTransformerConv(
                 in_channels  = hidden_dim,
                 out_channels = hidden_dim // num_heads,
                 heads        = num_heads,
                 edge_dim     = EDGE_FEAT_DIM,
                 dropout      = dropout,
-                concat       = True,
             )
             for _ in range(num_layers)
         ])
@@ -123,20 +215,23 @@ class GraphTransformerEncoder(nn.Module):
         )
 
     def forward(self, data: Data) -> torch.Tensor:
-        x = self.node_embed(data.x)                    # [B*max_nodes, H]
+        x = self.node_embed(data.x)                    # [B*nodes, H]
+
+        hop_dist = getattr(data, "hop_dist", None)
 
         for conv, norm in zip(self.conv_layers, self.layer_norms):
             residual = x
-            x = conv(x, data.edge_index, data.edge_attr)
+            x = conv(x, data.edge_index, data.edge_attr, hop_dist=hop_dist)
             x = norm(x + residual)
             x = F.relu(x)
 
-        # ① Static reshape pooling — replaces global_mean_pool / scatter.
-        #   GraphConverter guarantees exactly max_nodes nodes per graph, so
-        #   this view is always valid and contains no dynamic index lookups.
-        #   Works for any batch size B without any caller-side arguments.
-        B = x.shape[0] // self.max_nodes
-        latent = x.view(B, self.max_nodes, self.hidden_dim).mean(dim=1)
+        # Dynamic graph pooling via PyG global_mean_pool
+        # Allows zero-shot execution on arbitrary topologies without hardcoded node limits.
+        batch = getattr(data, "batch", None)
+        if batch is None:
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+
+        latent = global_mean_pool(x, batch)
         return self.output_mlp(latent)                 # [B, hidden_dim]
 
 

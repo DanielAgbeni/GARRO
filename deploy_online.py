@@ -332,18 +332,29 @@ async def main(args):
                 # 1. Fetch live telemetry (non-blocking)
                 G = await fetch_network_state(G, session)
 
-                # 2. Route each flow with PPO agent
+                # 2. Route each flow with PPO agent (with SHR Fast-Path Fallback)
                 flow_tasks = []
                 for src_ip, dst_ip, src_node, dst_node in flow_demands:
                     candidates = all_paths.get((src_node, dst_node), [])
                     if not candidates:
                         continue
 
-                    action, _, _ = agent.select_action(G, candidates)
-                    selected_path = (
-                        candidates[action] if action < len(candidates)
-                        else candidates[0]
-                    )
+                    try:
+                        # Wrap action selection with timeout and exception handler for Self-Healing Router (SHR) failover
+                        action, _, _ = await asyncio.wait_for(
+                            asyncio.to_thread(agent.select_action, G, candidates),
+                            timeout=2.0,
+                        )
+                        selected_path = (
+                            candidates[action] if action < len(candidates)
+                            else candidates[0]
+                        )
+                    except Exception as ai_exc:
+                        print(f"[Deploy/SHR] AI Decision Plane exception/timeout ({ai_exc}) — triggering Fast-Path Dijkstra Fallback for {src_ip}→{dst_ip}")
+                        try:
+                            selected_path = nx.dijkstra_path(G, src_node, dst_node, weight="delay")
+                        except Exception:
+                            selected_path = candidates[0] if candidates else []
 
                     dpid_path = [node + 1 for node in selected_path]
                     pair_key = (src_ip, dst_ip)

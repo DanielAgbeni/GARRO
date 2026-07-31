@@ -55,16 +55,19 @@ def mm1k_metrics_vec(
     lam: np.ndarray,
     mu:  np.ndarray,
     K:   int,
+    stochastic_sampling: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute M/M/1/K steady-state metrics for ALL edges simultaneously
-    using NumPy broadcasting. This replaces N individual scalar calls.
+    using NumPy broadcasting. Supports stochastic Poisson inter-arrival
+    and exponential service time sampling per Section 2.5.2.
 
     Parameters
     ----------
     lam : np.ndarray  Arrival rates  [N]
     mu  : np.ndarray  Service rates  [N]
     K   : int         Buffer capacity (same for all queues)
+    stochastic_sampling : bool  If True, perform Poisson arrival and Exponential service sampling.
 
     Returns
     -------
@@ -73,6 +76,13 @@ def mm1k_metrics_vec(
     mean_delay  : np.ndarray  Mean queuing delay in ms [N]
     """
     eps = 1e-9
+
+    if stochastic_sampling:
+        # Stochastic Poisson inter-arrival rate sampling
+        lam = np.random.poisson(np.maximum(lam, 0.0)).astype(np.float64)
+        # Stochastic Exponential service rate sampling
+        mu = np.random.exponential(np.maximum(mu, eps)).astype(np.float64)
+
     mu  = np.where(mu <= 0, eps, mu)
     rho = lam / mu
 
@@ -442,28 +452,11 @@ class MM1KNetworkEnv(GymEnv):
 
     def _compute_reward(self, path: List[int]) -> float:
         """
-        Compute the multi-objective GARRO reward for a selected path.
+        Compute the proposal-compliant multi-objective GARRO reward for a selected path.
 
-        Formula
-        -------
-        base_qos_reward = α1·(T_actual/T_req) − α2·D_norm
-                        − α3·L_pkt − α4·σ²_util
-
-        hop_penalty        = hop_weight        × (hops − 1)
-        congestion_penalty = congestion_weight × max(0, max_util_on_path − 0.7)
-
-        final_reward = (base_qos_reward × 10.0) − hop_penalty − congestion_penalty
-
-        Design rationale
-        ----------------
-        * The ×10 terminal scalar amplifies *only* the base QoS signal
-          (raw range ≈ [−1.0, +0.5]) to a training-friendly range;
-          it is NOT applied to the routing penalties.
-        * hop_weight / congestion_weight are loaded from config so each
-          topology (NSFNET, GEANT2, Fat-Tree) can tune them independently
-          without structural changes to the environment:
-            – Wide-area (NSFNET/GEANT2): hop_weight ≈ 0.02, cong_weight ≈ 1.0
-            – Data-centre (Fat-Tree)   : hop_weight ≈ 0.05, cong_weight ≈ 2.0
+        Theoretical Formula (Equation 2.2.1)
+        ------------------------------------
+        r_t = α1 · (T_actual / T_requested) − α2 · D_path − α3 · L_packet − α4 · Var_util
 
         Parameters
         ----------
@@ -471,7 +464,7 @@ class MM1KNetworkEnv(GymEnv):
 
         Returns
         -------
-        float  Scalar reward in approx. range [−15.0, +5.0].
+        float  Scalar reward matching theoretical formula.
         """
         if not path or len(path) < 2:
             return -10.0
@@ -498,35 +491,33 @@ class MM1KNetworkEnv(GymEnv):
             min_bw            = min(min_bw, edge.get("bandwidth", 1_000))
             max_util_on_path  = max(max_util_on_path, util)
 
-        # ── Global utilisation variance (uses cached NumPy array) ──────────
+        # ── Global utilisation variance ────────────────────────────────────
         util_variance = float(np.var(self._util_arr)) \
             if hasattr(self, "_util_arr") else 0.0
 
-        # ── Throughput ratio ───────────────────────────────────────────────
+        # ── Throughput ratio (T_actual / T_requested) ──────────────────────
         T_actual   = min_bw * (1.0 - total_loss)
         tput_ratio = T_actual / (min_bw + 1e-9)
 
-        # ── Normalise delay ────────────────────────────────────────────────
+        # ── Normalised path delay (D_path) ─────────────────────────────────
         delay_norm = min(total_delay / 500.0, 1.0)
 
-        # ── Base multi-objective QoS reward ───────────────────────────────
-        base_qos_reward = (
+        # ── Theoretical Multi-Objective Reward (Section 2.2.1) ─────────────
+        r_t = (
               self.alpha[0] * tput_ratio
             - self.alpha[1] * delay_norm
             - self.alpha[2] * total_loss
             - self.alpha[3] * util_variance
         )
 
-        # ── Topology-adapted routing penalties (outside the ×10 scalar) ───
-        # hop_weight / congestion_weight are set in __init__ from config so
-        # each topology can be tuned without touching this method.
-        hop_penalty        = self.hop_weight        * (len(path) - 1)
-        congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
+        # ── Optional Secondary Penalty Modifiers ───────────────────────────
+        use_secondary = self.cfg.get("reward_weights", {}).get("use_secondary_penalties", False)
+        if use_secondary:
+            hop_penalty        = self.hop_weight        * (len(path) - 1)
+            congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
+            r_t = (r_t * 10.0) - hop_penalty - congestion_penalty
 
-        # ── Final reward: QoS signal scaled, penalties applied outside ────
-        final_reward = (base_qos_reward * 10.0) - hop_penalty - congestion_penalty
-
-        return float(final_reward)
+        return float(r_t)
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
 
