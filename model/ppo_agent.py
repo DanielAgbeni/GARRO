@@ -80,12 +80,19 @@ def _configure_threads() -> None:
     where PyTorch spends the majority of its time.
     """
     n_cores = multiprocessing.cpu_count()
-    torch.set_num_threads(n_cores)
-    torch.set_num_interop_threads(max(2, n_cores // 4))
+    try:
+        torch.set_num_threads(n_cores)
+    except RuntimeError:
+        pass
+    try:
+        torch.set_num_interop_threads(max(2, n_cores // 4))
+    except RuntimeError:
+        pass
     os.environ.setdefault("OMP_NUM_THREADS",      str(n_cores))
     os.environ.setdefault("MKL_NUM_THREADS",      str(n_cores))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(n_cores))
     os.environ.setdefault("NUMEXPR_NUM_THREADS",  str(n_cores))
+
 
 
 def _best_device() -> torch.device:
