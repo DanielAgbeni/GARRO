@@ -113,7 +113,8 @@ def mm1k_metrics_vec(
     # ── Little's Law → delay (ms) ───────────────────────────────────────────
     lam_eff    = lam * (1.0 - P_overflow)
     with np.errstate(divide='ignore', invalid='ignore'):
-        mean_delay = np.where(lam_eff > eps, E_Q / lam_eff * 1_000.0, 1e6)
+        mean_delay = np.where(lam_eff > 1e-3, (E_Q / (lam_eff + eps)) * 1_000.0, 0.0)
+        mean_delay = np.clip(mean_delay, 0.0, 500.0)
 
     return E_Q, P_overflow, mean_delay
 
@@ -517,6 +518,7 @@ class MM1KNetworkEnv(GymEnv):
             congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
             r_t = (r_t * 10.0) - hop_penalty - congestion_penalty
 
+        self._last_path_delay = float(total_delay)
         return float(r_t)
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
@@ -570,10 +572,11 @@ class MM1KNetworkEnv(GymEnv):
         truncated  = False
         obs        = self._get_obs()
         info       = {
-            "path":   selected_path,
-            "src":    self.current_src,
-            "dst":    self.current_dst,
-            "reward": reward,
+            "path":            selected_path,
+            "src":             self.current_src,
+            "dst":             self.current_dst,
+            "reward":          reward,
+            "path_latency_ms": getattr(self, "_last_path_delay", 0.0),
         }
         return obs, reward, terminated, truncated, info
 
