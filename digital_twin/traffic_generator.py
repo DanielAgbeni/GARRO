@@ -208,16 +208,21 @@ class TrafficGenerator:
     # Public API
     # ──────────────────────────────────────────────────────────────────────
 
-    def reset(self) -> None:
+    def reset(self, seed: Optional[int] = None) -> None:
         """
-        Reset AR(1) state and step counter.
+        Reset AR(1) state and optionally reseed the RNG.
 
-        **Must be called at the start of every RL episode** so that each
-        episode begins from a fresh traffic history.  Without reset(), the
-        AR(1) state leaks across episodes, which biases early-episode
-        observations and makes the replay buffer inconsistent.
+        Parameters
+        ----------
+        seed : int | None
+            When provided, the traffic generator is reseeded so that
+            evaluation is fully reproducible. During training, leave
+            this as None to preserve stochasticity.
         """
-        self._prev_T     = None
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+
+        self._prev_T = None
         self._step_count = 0
 
     def generate(self, num_steps: int = 1) -> np.ndarray:

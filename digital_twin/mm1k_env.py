@@ -288,6 +288,7 @@ class MM1KNetworkEnv(GymEnv):
         tod_peak_hour = config.get("mm1k", {}).get("tod_peak_hour", 16.0)
         steps_per_hour = config.get("mm1k", {}).get("steps_per_hour", 60.0)
 
+        env_seed = config.get("seed", 42)
         from digital_twin.traffic_generator import TrafficGenerator
         self.traffic_gen = TrafficGenerator(
             graph=self.G,
@@ -299,7 +300,7 @@ class MM1KNetworkEnv(GymEnv):
             tod_amplitude=tod_amplitude,
             tod_peak_hour=tod_peak_hour,
             steps_per_hour=steps_per_hour,
-            seed=None
+            seed=env_seed,
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -402,7 +403,7 @@ class MM1KNetworkEnv(GymEnv):
             self._lam_arr[:] = np.clip(self._lam_arr, 0.0, None)
 
         # Service rates are subject to some independent random variation
-        self._mu_arr[:] = self.base_mu * np.random.uniform(0.8, 1.2, self.n_edges)
+        self._mu_arr[:] = self.base_mu * self.np_random.uniform(0.8, 1.2, self.n_edges)
 
         self._update_queue_state()
 
@@ -426,10 +427,10 @@ class MM1KNetworkEnv(GymEnv):
             attrs = self.G.nodes[n]
             off   = node_base + i * 4
             # Add mild noise to simulate telemetry jitter
-            buf[off]   = float(np.clip(attrs.get("cpu",          0.5) + np.random.normal(0, 0.05), 0.0, 1.0))
-            buf[off+1] = float(np.clip(attrs.get("buffer_occ",   0.3) + np.random.normal(0, 0.05), 0.0, 1.0))
-            buf[off+2] = float(np.clip(attrs.get("ingress_rate", 0.5) + np.random.normal(0, 0.05), 0.0, 1.0))
-            buf[off+3] = float(np.clip(attrs.get("egress_rate",  0.5) + np.random.normal(0, 0.05), 0.0, 1.0))
+            buf[off]   = float(np.clip(attrs.get("cpu",          0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
+            buf[off+1] = float(np.clip(attrs.get("buffer_occ",   0.3) + self.np_random.normal(0, 0.05), 0.0, 1.0))
+            buf[off+2] = float(np.clip(attrs.get("ingress_rate", 0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
+            buf[off+3] = float(np.clip(attrs.get("egress_rate",  0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
 
         # ── Edge features (vectorized using cached arrays) ─────────────────
         edge_base = n_nodes * 4
@@ -531,7 +532,7 @@ class MM1KNetworkEnv(GymEnv):
     ) -> Tuple[np.ndarray, dict]:
         super().reset(seed=seed)
         self.step_count = 0
-        self.traffic_gen.reset()
+        self.traffic_gen.reset(seed=seed)
 
         nodes = list(self.G.nodes())
         pair  = self.np_random.choice(len(nodes), size=2, replace=False)
