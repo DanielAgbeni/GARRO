@@ -27,7 +27,7 @@ Usage
     # GEANT2 (24 nodes) — medium
     python train_offline.py --topology geant2 --episodes 20000
 
-    # Fat-Tree k=8 (80 nodes) — run overnight
+    # Fat-Tree k=4 (20 nodes) — Data Center Network
     python train_offline.py --topology fat_tree --episodes 50000
 
     # Disable torch.compile for debugging
@@ -64,7 +64,7 @@ from topologies.fat_tree import get_fat_tree
 TOPOLOGY_MAP = {
     "nsfnet":    get_nsfnet,
     "geant2":    get_geant2,
-    "fat_tree":  lambda: get_fat_tree(k=8),
+    "fat_tree":  lambda: get_fat_tree(k=4),
 }
 
 

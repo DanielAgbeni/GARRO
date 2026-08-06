@@ -73,11 +73,8 @@ from model.graph_transformer import GraphTransformerEncoder, nx_to_pyg
 
 def _configure_threads() -> None:
     """
-    Pin all threading backends to use every available CPU core.
-
-    interop_threads handles async dispatch and DataLoader workers; setting it
-    to max(2, n_cores // 4) frees more intra-op threads for BLAS matmuls
-    where PyTorch spends the majority of its time.
+    Pin all threading backends to use every available CPU core and configure
+    TorchDynamo / CUDA performance optimizations.
     """
     n_cores = multiprocessing.cpu_count()
     try:
@@ -92,6 +89,19 @@ def _configure_threads() -> None:
     os.environ.setdefault("MKL_NUM_THREADS",      str(n_cores))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(n_cores))
     os.environ.setdefault("NUMEXPR_NUM_THREADS",  str(n_cores))
+
+    # ── TorchDynamo & CUDA Optimizations ─────────────────────────────────────
+    # Capture scalar outputs to eliminate Tensor.item() graph breaks during torch.compile
+    try:
+        import torch._dynamo
+        torch._dynamo.config.capture_scalar_outputs = True
+    except Exception:
+        pass
+
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
 
 
 

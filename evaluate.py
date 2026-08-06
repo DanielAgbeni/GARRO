@@ -65,7 +65,7 @@ from topologies.fat_tree import get_fat_tree
 TOPOLOGY_MAP = {
     "nsfnet":   get_nsfnet,
     "geant2":   get_geant2,
-    "fat_tree": lambda: get_fat_tree(k=8),
+    "fat_tree": lambda: get_fat_tree(k=4),
 }
 
 

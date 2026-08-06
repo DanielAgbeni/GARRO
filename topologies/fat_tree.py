@@ -1,11 +1,11 @@
 """
 Fat-Tree Topology — Parameterised k-ary Fat-Tree data centre network.
 
-For k=8 (default):
-    - 16  core switches
-    - 32  aggregation switches  (k pods × k/2 per pod)
-    - 32  edge switches         (k pods × k/2 per pod)
-    Total: 80 switches
+For k=4 (default as per Chapter 3 writeup):
+    - 4   core switches         ((k/2)²)
+    - 8   aggregation switches  (k pods × k/2 per pod)
+    - 8   edge switches         (k pods × k/2 per pod)
+    Total: 20 switches (plus 16 attached hosts in Mininet)
 
 Node numbering (contiguous ranges):
     [0,         num_core)             → core switches
@@ -17,14 +17,14 @@ All links are 10 Gbps with 1 ms intra-rack delay.
 import networkx as nx
 
 
-def get_fat_tree(k: int = 8) -> nx.Graph:
+def get_fat_tree(k: int = 4) -> nx.Graph:
     """
     Build a k-ary Fat-Tree topology.
 
     Parameters
     ----------
     k : int
-        The pod/port parameter (must be even). Default 8.
+        The pod/port parameter (must be even). Default 4.
 
     Returns
     -------

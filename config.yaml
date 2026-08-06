@@ -54,6 +54,19 @@ topology_overrides:
     training:
       update_interval: 2048       # Larger rollout for 24-node graph; still safe with max_update_interval=8192
 
+  fat_tree:
+    # Fat-Tree k=4 (20 switches, 16 hosts) — hierarchical Data Center Network (DCN)
+    # Uses higher hop and congestion penalties to optimize equal-cost multi-path (ECMP) routing.
+    ppo:
+      entropy_coef: 0.04          # Moderate exploration bonus for regular 20-node structure
+      gae_lambda: 0.98            # Multi-hop credit assignment for 4-hop DCN paths
+      clip_epsilon: 0.1           # Tight clipping prevents policy instability
+    reward_weights:
+      hop_weight: 0.05            # DCN-specific cost per hop (counteracts ECMP sprawl)
+      congestion_weight: 2.0      # DCN-specific cost per util unit above 0.7
+    training:
+      update_interval: 1024       # Rollout steps tailored for 20-node DCN graph
+
 reward_weights:
   alpha1: 0.35                    # Throughput weight (reduced 0.4→0.35 to give room to delay)
   alpha2: 0.40                    # Delay weight (increased 0.3→0.4; OSPF wins on delay — target this directly)
