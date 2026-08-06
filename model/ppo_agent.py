@@ -93,10 +93,11 @@ def _configure_threads() -> None:
     # ── TorchDynamo & CUDA Optimizations ─────────────────────────────────────
     # Capture scalar outputs to eliminate Tensor.item() graph breaks during torch.compile
     try:
-        import torch._dynamo
-        torch._dynamo.config.capture_scalar_outputs = True
+        import torch._dynamo as _dynamo
+        _dynamo.config.capture_scalar_outputs = True
     except Exception:
         pass
+
 
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
