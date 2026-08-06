@@ -39,7 +39,7 @@ The project is structured into three clear planes: the AI Decision Plane, the Co
                                   ▼
 ┌──────────────────────────────────────────────────────────────┐
 │             SDN Data Plane (Phase 2 Emulation)               │
-│             - Mininet Network Emulation                      │ (topologies/mininet_nsfnet.py)
+│             - Mininet Network Emulation                      │ (topologies/mininet_*.py)
 │             - Open vSwitch (OVS) Kernel Datapath             │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -154,9 +154,9 @@ Depending on your goal (quick testing vs. reliable publication-grade results), u
 
 | Topology | Scale | Checkpoint ID | Sanity Check (Episodes) | Full Convergence (Recommended) | Approx. CPU Time | Key Learning Focus |
 |---|---|---|---|---|---|---|
-| **NSFNET** | 14 Nodes, 21 Links | `nsfnet` | 1,000 | **5,000 - 10,000** | ~1.5 hours (Full) | Basic routing loops, WAN propagation latency awareness. |
-| **GEANT2** | 24 Nodes, 37 Links | `geant2` | 5,000 | **15,000 - 20,000** | ~4 hours (Full) | Load balancing under asymmetric constraints & irregular cross-links. |
-| **Fat-Tree** | 80 Nodes, 112 Links | `fat_tree` | 10,000 | **40,000 - 50,000** | ~12 hours (Full) | Hierarchical paths, core-aggregation traffic spreading in data centers. |
+| **NSFNET** | 14 Nodes, 21 Links | `nsfnet` | 1,000 | **5,000 - 10,000** | ~15-25 min (GPU) | Basic routing loops, WAN propagation latency awareness. |
+| **GEANT2** | 24 Nodes, 37 Links | `geant2` | 5,000 | **15,000 - 20,000** | ~30-45 min (GPU) | Load balancing under asymmetric constraints & irregular cross-links. |
+| **Fat-Tree (k=4)** | 20 Switches, 32 Links | `fat_tree` | 5,000 | **20,000 - 50,000** | ~1-2 hours (GPU) | Hierarchical paths, equal-cost multi-path (ECMP) traffic spreading in DCNs. |
 
 ---
 
@@ -182,14 +182,14 @@ Depending on your goal (quick testing vs. reliable publication-grade results), u
   python train_offline.py --topology geant2 --episodes 20000
   ```
 
-#### 3. Fat-Tree Training
+#### 3. Fat-Tree (k=4) Training
 * **Sanity Check**:
   ```bash
-  python train_offline.py --topology fat_tree --episodes 10000
+  python train_offline.py --topology fat_tree --episodes 5000
   ```
 * **Full Reliable Training**:
   ```bash
-  python train_offline.py --topology fat_tree --episodes 50000
+  python train_offline.py --topology fat_tree --episodes 20000
   ```
 
 
@@ -296,18 +296,18 @@ Kaggle provides a **free NVIDIA Tesla T4 GPU (16 GB VRAM)** with 29 GB RAM and u
 
 #### GPU & System Resource Utilization Highlights
 The codebase auto-detects Kaggle's T4 and applies CUDA-optimised overrides:
-- **CUDA Auto-scaling**: `batch_size → 256`, `update_interval → 2048`, `update_epochs → 15` (no config edit required).
-- **AMP `float16`**: The T4 has no native `bfloat16` hardware support. Set `amp_dtype: float16` in `config.yaml` for optimal throughput.
-- **Non-blocking H→D Transfers**: Graph state tensors are streamed asynchronously to the GPU, overlapping CPU simulation with GPU inference.
-- **`torch.compile` off by default**: Disabled on Kaggle T4 to avoid stall-on-compile warnings; you still get full CUDA speedups via the scaled batch/rollout sizes.
+- **CUDA Auto-scaling**: `batch_size → 256` (or `512` on T4 ×2), `update_interval → 1024` (or `2048` on T4 ×2).
+- **AMP `float16`**: Auto-detected for T4 GPU architecture.
+- **Non-blocking H→D Transfers**: Graph state tensors stream asynchronously to the GPU, overlapping CPU simulation with GPU inference.
+- **`torch.compile` enabled by default**: Optimized via `capture_scalar_outputs=True` for maximum GPU execution speed without graph break stalls.
 
-#### Approximate T4 Speed Benchmarks
+#### Approximate Speed Benchmarks (T4 / T4 ×2)
 
-| Topology | Nodes | ep/s (T4) | 10 000 ep ETA |
+| Topology | Nodes | ep/s (T4 ×2) | 10,000 ep ETA |
 |---|---|---|---|
-| **NSFNET** | 14 | 7–10 | ~20–25 min |
-| **GEANT2** | 24 | 3–5 | ~35–55 min |
-| **Fat-Tree k=8** | 80 | 0.5–1 | ~3–6 h |
+| **NSFNET** | 14 | 10–14 | ~12–15 min |
+| **GEANT2** | 24 | 5–8 | ~22–30 min |
+| **Fat-Tree (k=4)** | 20 | 3–6 | ~30–45 min |
 
 ---
 
@@ -427,13 +427,13 @@ print(f"GPUs visible to PyTorch: {torch.cuda.device_count()}")
 
 #### Approximate Speed on T4 ×2
 
-| Topology | ep/s (single T4) | ep/s (T4 ×2) | 10 000 ep ETA (×2) |
+| Topology | ep/s (single T4) | ep/s (T4 ×2) | 10,000 ep ETA (×2) |
 |---|---|---|---|
-| **NSFNET** | 7–10 | **10–14** | ~12–17 min |
-| **GEANT2** | 3–5 | **5–8** | ~22–35 min |
-| **Fat-Tree k=8** | 0.5–1 | **0.8–1.5** | ~2–4 h |
+| **NSFNET** | 7–10 | **10–14** | ~12–15 min |
+| **GEANT2** | 3–5 | **5–8** | ~22–30 min |
+| **Fat-Tree (k=4)** | 2–4 | **3–6** | ~30–45 min |
 
-**NSFNET** (~12–17 min for 10 000 episodes on T4 ×2):
+**NSFNET** (~12–15 min for 10 000 episodes on T4 ×2):
 ```python
 !cd /kaggle/working/schproject && \
     python train_offline.py --topology nsfnet --episodes 10000
@@ -445,10 +445,10 @@ print(f"GPUs visible to PyTorch: {torch.cuda.device_count()}")
     python train_offline.py --topology geant2 --episodes 20000
 ```
 
-**Fat-Tree** (first session, 0 → 10 000 episodes):
+**Fat-Tree (k=4)** (~1–1.5 hours for 20 000 episodes):
 ```python
 !cd /kaggle/working/schproject && \
-    python train_offline.py --topology fat_tree --episodes 10000
+    python train_offline.py --topology fat_tree --episodes 20000
 ```
 
 > [!TIP]
@@ -494,8 +494,7 @@ CHECKPOINT = "/kaggle/working/schproject/checkpoints/garro_fat_tree_ep10000.pt"
     python train_offline.py \
         --topology fat_tree \
         --episodes 20000 \
-        --checkpoint {CHECKPOINT} \
-        --no-compile
+        --checkpoint {CHECKPOINT}
 ```
 
 The script parses the episode index from the filename and resumes the progress bar automatically.
