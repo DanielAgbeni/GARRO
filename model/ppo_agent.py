@@ -504,9 +504,10 @@ class PPOAgent:
     ):
         _configure_threads()
 
-        self.config  = config
-        self.k_paths = k_paths
-        self.device  = device if device is not None else _best_device()
+        self.config    = config
+        self.k_paths   = k_paths
+        self.num_nodes = num_nodes
+        self.device    = device if device is not None else _best_device()
 
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark     = True
