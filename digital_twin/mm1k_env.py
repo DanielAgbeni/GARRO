@@ -512,12 +512,11 @@ class MM1KNetworkEnv(GymEnv):
             - self.alpha[3] * util_variance
         )
 
-        # ── Optional Secondary Penalty Modifiers ───────────────────────────
-        use_secondary = self.cfg.get("reward_weights", {}).get("use_secondary_penalties", False)
-        if use_secondary:
-            hop_penalty        = self.hop_weight        * (len(path) - 1)
-            congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
-            r_t = (r_t * 10.0) - hop_penalty - congestion_penalty
+        # ── Topology & Congestion Penalty Modifiers ───────────────────────
+        # Scale base reward × 10.0 then subtract hop and congestion penalties
+        hop_penalty        = self.hop_weight        * (len(path) - 1)
+        congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
+        r_t = (r_t * 10.0) - hop_penalty - congestion_penalty
 
         self._last_path_delay = float(total_delay)
         return float(r_t)
