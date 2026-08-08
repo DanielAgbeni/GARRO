@@ -245,12 +245,14 @@ def main(args):
             if match:
                 ep_idx = int(match.group(1))
                 print(f"[Init] Resuming training from episode {ep_idx}")
+                agent.set_update_step(ep_idx)
             else:
                 print(f"[Init] Resuming training with loaded checkpoint weights (starting from episode 0)")
         else:
             print(f"[Error] Checkpoint file '{args.checkpoint}' not found!")
             import sys
             sys.exit(1)
+
 
     step_count          = 0
     ep_reward           = 0.0

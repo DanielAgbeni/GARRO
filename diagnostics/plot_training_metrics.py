@@ -30,17 +30,28 @@ def parse_log(log_path: str):
     entropies = []
     kl_divs = []
     
-    # Track current episode for update metrics
+    # Track current episode index and update count
     curr_ep = 0
+    update_count = 0
+    update_interval = 2048
+    steps_per_ep = 200
+    eps_per_update = update_interval / steps_per_ep  # 10.24 episodes per update
     
     # Regex patterns
     ep_pattern = re.compile(r"\[Ep\s+(\d+)/\d+\]\s+Avg Reward:\s+([+-]?\d+\.\d+)")
+    interval_pattern = re.compile(r"update_interval clamped: config=\d+ → (\d+)")
     update_pattern = re.compile(
         r"↳ PPO update \| PL:\s+([+-]?\d+\.\d+)\s+VL:\s+(\d+\.\d+)\s+Ent:\s+(\d+\.\d+)\s+KL:\s+([+-]?\d+\.\d+)"
     )
     
     with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
+            int_match = interval_pattern.search(line)
+            if int_match:
+                update_interval = int(int_match.group(1))
+                eps_per_update = update_interval / steps_per_ep
+                continue
+
             ep_match = ep_pattern.search(line)
             if ep_match:
                 curr_ep = int(ep_match.group(1))
@@ -50,7 +61,9 @@ def parse_log(log_path: str):
                 
             up_match = update_pattern.search(line)
             if up_match:
-                update_episodes.append(curr_ep)
+                update_count += 1
+                exact_ep = update_count * eps_per_update
+                update_episodes.append(exact_ep)
                 policy_losses.append(float(up_match.group(1)))
                 value_losses.append(float(up_match.group(2)))
                 entropies.append(float(up_match.group(3)))
@@ -65,6 +78,7 @@ def parse_log(log_path: str):
         "entropies": np.array(entropies),
         "kl_divs": np.array(kl_divs),
     }
+
 
 
 def plot_metrics(data: dict, output_path: str = "diagnostics/training_diagnostics.png"):

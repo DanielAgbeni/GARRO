@@ -1025,7 +1025,24 @@ class PPOAgent:
         results["lr_critic"] = self.opt_ac.param_groups[1]["lr"]
         return results
 
+    def set_update_step(self, ep_idx: int):
+        """
+        Fast-forward LR schedulers to match the resumed episode index.
+        Sets LR to the exact target step along the new T_max cosine curve.
+        """
+        _steps_per_ep = self.config.get("training", {}).get("max_steps_per_episode", 200)
+        target_step = (ep_idx * _steps_per_ep) // self._update_interval
+        if target_step > 0:
+            self.scheduler_encoder.step(target_step)
+            self.scheduler_ac.step(target_step)
+            print(
+                f"[PPO] LR schedulers synchronized to update #{target_step} / {self.scheduler_encoder.T_max} "
+                f"(lr_actor={self.opt_encoder.param_groups[0]['lr']:.2e}, "
+                f"lr_critic={self.opt_ac.param_groups[1]['lr']:.2e})"
+            )
+
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
+
 
     def save(self, path: str):
         """Save encoder + actor-critic weights, optimizers, and scaler to a .pt checkpoint."""
