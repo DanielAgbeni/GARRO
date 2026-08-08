@@ -40,7 +40,7 @@ from torch_geometric.utils import softmax
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-NODE_FEAT_DIM = 4   # [cpu, buffer_occ, ingress_rate, egress_rate]
+NODE_FEAT_DIM = 6   # [cpu, buffer_occ, ingress_rate, egress_rate, is_src, is_dst]
 EDGE_FEAT_DIM = 4   # [bw_norm, util, delay_norm, pkt_loss]
 
 _STAR_EDGE_ATTR: List[float] = [1.0, 0.0, 0.0, 0.0]
@@ -309,6 +309,8 @@ class GraphConverter:
             feat[i, 1] = np.clip(a.get("buffer_occ",   0.3), 0.0, 1.0)
             feat[i, 2] = np.clip(a.get("ingress_rate", 0.5), 0.0, 1.0)
             feat[i, 3] = np.clip(a.get("egress_rate",  0.5), 0.0, 1.0)
+            feat[i, 4] = float(a.get("is_src", 0.0))
+            feat[i, 5] = float(a.get("is_dst", 0.0))
 
         # ② Single non-blocking host→device copy for all real-node features.
         self._x[: self.n_real, : NODE_FEAT_DIM].copy_(
@@ -320,9 +322,15 @@ class GraphConverter:
             edge = G.edges[u, v]
             util = float(np.clip(edge.get("utilization", 0.0), 0.0, 1.0))
             loss = float(np.clip(edge.get("packet_loss", 0.0), 0.0, 1.0))
+            prop_delay = float(edge.get("delay", 1.0))
+            q_delay    = float(edge.get("queuing_delay", 0.0))
+            tot_delay_norm = float(np.clip((prop_delay + min(q_delay, 500.0)) / 500.0, 0.0, 1.0))
+
             self.edge_attr[curr, 1] = util
+            self.edge_attr[curr, 2] = tot_delay_norm
             self.edge_attr[curr, 3] = loss
             self.edge_attr[curr + 1, 1] = util
+            self.edge_attr[curr + 1, 2] = tot_delay_norm
             self.edge_attr[curr + 1, 3] = loss
             curr += 2
 

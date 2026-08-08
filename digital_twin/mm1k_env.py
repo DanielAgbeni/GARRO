@@ -87,30 +87,33 @@ def mm1k_metrics_vec(
     rho = lam / mu
 
     # ── ρ = 1 case ─────────────────────────────────────────────────────────
-    rho1_mask  = np.abs(rho - 1.0) < eps
+    rho1_mask  = np.abs(rho - 1.0) < 1e-5
     P0_rho1    = 1.0 / (K + 1)
     E_Q_rho1   = K / 2.0
     P_ov_rho1  = P0_rho1
 
     # ── ρ ≠ 1 case ─────────────────────────────────────────────────────────
-    rho_K      = np.power(rho, K)
-    rho_K1     = rho_K * rho
+    rho_safe   = np.where(rho1_mask, 0.5, rho)
+    rho_K      = np.power(rho_safe, K)
+    rho_K1     = rho_K * rho_safe
     denom      = 1.0 - rho_K1
     safe_denom = np.where(np.abs(denom) < eps, eps, denom)
 
-    P0         = (1.0 - rho) / safe_denom
+    P0         = (1.0 - rho_safe) / safe_denom
     P_overflow = P0 * rho_K
 
-    numerator  = rho * (1.0 - (K + 1) * rho_K + K * rho_K1)
-    E_Q_gen    = numerator / ((1.0 - rho + eps) * safe_denom)
+    numerator  = rho_safe * (1.0 - (K + 1) * rho_K + K * rho_K1)
+    one_minus_rho = 1.0 - rho_safe
+    safe_one_minus_rho = np.where(np.abs(one_minus_rho) < eps, eps, one_minus_rho)
+    E_Q_gen    = numerator / (safe_one_minus_rho * safe_denom)
 
-    # ── Merge ρ=1 and ρ≠1 cases ────────────────────────────────────────────
+    # ── Merge ρ=1 and ρ≠1 cases ────────────────────────────────────
     E_Q        = np.where(rho1_mask, E_Q_rho1, E_Q_gen)
     P_overflow = np.where(rho1_mask, P_ov_rho1, P_overflow)
     P_overflow = np.clip(P_overflow, 0.0, 1.0)
     E_Q        = np.clip(E_Q, 0.0, float(K))
 
-    # ── Little's Law → delay (ms) ───────────────────────────────────────────
+    # ── Little's Law → delay (ms) ───────────────────────────────────
     lam_eff    = lam * (1.0 - P_overflow)
     with np.errstate(divide='ignore', invalid='ignore'):
         mean_delay = np.where(lam_eff > 1e-3, (E_Q / (lam_eff + eps)) * 1_000.0, 0.0)
@@ -228,7 +231,7 @@ class MM1KNetworkEnv(GymEnv):
         )
 
         # ── Pre-allocated observation buffer (reused every step) ──────────
-        node_feat_dim = self.num_nodes * 4
+        node_feat_dim = self.num_nodes * 6
         edge_feat_dim = self.num_edges * 4
         self._obs_dim = node_feat_dim + edge_feat_dim
         self._obs_buf = np.zeros(self._obs_dim, dtype=np.float32)
@@ -414,7 +417,7 @@ class MM1KNetworkEnv(GymEnv):
         Uses pre-allocated buffer and NumPy array writes instead of
         Python list comprehensions — eliminates GC pressure in the hot-loop.
 
-        Node features (per node): [cpu, buffer_occ, ingress_rate, egress_rate]
+        Node features (per node): [cpu, buffer_occ, ingress_rate, egress_rate, is_src, is_dst]
         Edge features (per edge): [bw_norm, utilization, delay_norm, packet_loss]
         All values normalised to [0.0, 1.0].
         """
@@ -425,24 +428,30 @@ class MM1KNetworkEnv(GymEnv):
         node_base = 0
         for i, n in enumerate(self._sorted_nodes):
             attrs = self.G.nodes[n]
-            off   = node_base + i * 4
+            off   = node_base + i * 6
+            is_src = 1.0 if n == self.current_src else 0.0
+            is_dst = 1.0 if n == self.current_dst else 0.0
+            attrs["is_src"] = is_src
+            attrs["is_dst"] = is_dst
             # Add mild noise to simulate telemetry jitter
             buf[off]   = float(np.clip(attrs.get("cpu",          0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
             buf[off+1] = float(np.clip(attrs.get("buffer_occ",   0.3) + self.np_random.normal(0, 0.05), 0.0, 1.0))
             buf[off+2] = float(np.clip(attrs.get("ingress_rate", 0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
             buf[off+3] = float(np.clip(attrs.get("egress_rate",  0.5) + self.np_random.normal(0, 0.05), 0.0, 1.0))
+            buf[off+4] = is_src
+            buf[off+5] = is_dst
 
         # ── Edge features (vectorized using cached arrays) ─────────────────
-        edge_base = n_nodes * 4
+        edge_base = n_nodes * 6
         bw_norm   = np.clip(self._edge_bw / 10_000.0, 0.0, 1.0)
         util      = self._util_arr.astype(np.float32)   if hasattr(self, "_util_arr")  else np.zeros(self.n_edges, np.float32)
         ploss     = self._ploss_arr.astype(np.float32)  if hasattr(self, "_ploss_arr") else np.zeros(self.n_edges, np.float32)
 
-        # Delay: use propagation delay from graph (static per edge)
-        delay_norm_arr = np.array(
-            [np.clip(self.G.edges[u, v].get("delay", 1.0) / 100.0, 0.0, 1.0)
-             for u, v in self.edges_list], dtype=np.float32
-        )
+        # Total delay: propagation delay + queuing delay normalized to [0, 1]
+        del_arr = getattr(self, "_delay_ms_arr", np.zeros(self.n_edges, np.float32))
+        prop_del_arr = np.array([self.G.edges[u, v].get("delay", 1.0) for u, v in self.edges_list], dtype=np.float32)
+        total_del_arr = prop_del_arr + np.minimum(del_arr, 500.0)
+        delay_norm_arr = np.clip(total_del_arr / 500.0, 0.0, 1.0).astype(np.float32)
 
         # Interleave [bw, util, delay, loss] into the buffer
         buf[edge_base + 0::4] = bw_norm
@@ -513,12 +522,21 @@ class MM1KNetworkEnv(GymEnv):
         )
 
         # ── Topology & Congestion Penalty Modifiers ───────────────────────
-        # Scale base reward × 10.0 then subtract hop and congestion penalties
         hop_penalty        = self.hop_weight        * (len(path) - 1)
         congestion_penalty = self.congestion_weight * max(0.0, max_util_on_path - 0.7)
         r_t = (r_t * 10.0) - hop_penalty - congestion_penalty
 
         self._last_path_delay = float(total_delay)
+        self._last_reward_terms = {
+            "tput_ratio": float(tput_ratio),
+            "D_path": float(total_delay),
+            "delay_norm": float(delay_norm),
+            "total_loss": float(total_loss),
+            "util_variance": float(util_variance),
+            "hop_penalty": float(hop_penalty),
+            "congestion_penalty": float(congestion_penalty),
+            "raw_reward": float(r_t),
+        }
         return float(r_t)
 
     # ── Gymnasium interface ───────────────────────────────────────────────────
@@ -548,6 +566,10 @@ class MM1KNetworkEnv(GymEnv):
                     self.candidate_paths = paths
                     break
 
+        for n in self._sorted_nodes:
+            self.G.nodes[n]["is_src"] = 1.0 if n == self.current_src else 0.0
+            self.G.nodes[n]["is_dst"] = 1.0 if n == self.current_dst else 0.0
+
         self._simulate_traffic()
         obs  = self._get_obs()
         info = {"src": self.current_src, "dst": self.current_dst}
@@ -557,6 +579,7 @@ class MM1KNetworkEnv(GymEnv):
         self, action: int
     ) -> Tuple[np.ndarray, float, bool, bool, dict]:
         self.step_count += 1
+        routed_src, routed_dst = self.current_src, self.current_dst
 
         if action < len(self.candidate_paths):
             selected_path = self.candidate_paths[action]
@@ -568,15 +591,37 @@ class MM1KNetworkEnv(GymEnv):
         self._simulate_traffic(selected_path)
         reward = self._compute_reward(selected_path)
 
+        # Transition demand pair for next step so policy routes dynamic flows
+        nodes = self._sorted_nodes
+        pair  = self.np_random.choice(len(nodes), size=2, replace=False)
+        self.current_src = int(nodes[pair[0]])
+        self.current_dst = int(nodes[pair[1]])
+        self.candidate_paths = self._all_paths.get(
+            (self.current_src, self.current_dst), []
+        )
+        if not self.candidate_paths:
+            for (s, d), paths in self._all_paths.items():
+                if paths:
+                    self.current_src, self.current_dst = s, d
+                    self.candidate_paths = paths
+                    break
+
+        for n in self._sorted_nodes:
+            self.G.nodes[n]["is_src"] = 1.0 if n == self.current_src else 0.0
+            self.G.nodes[n]["is_dst"] = 1.0 if n == self.current_dst else 0.0
+
         terminated = self.step_count >= self.max_steps
         truncated  = False
         obs        = self._get_obs()
         info       = {
             "path":            selected_path,
-            "src":             self.current_src,
-            "dst":             self.current_dst,
+            "src":             routed_src,
+            "dst":             routed_dst,
+            "next_src":        self.current_src,
+            "next_dst":        self.current_dst,
             "reward":          reward,
             "path_latency_ms": getattr(self, "_last_path_delay", 0.0),
+            "raw_reward_terms": getattr(self, "_last_reward_terms", {}),
         }
         return obs, reward, terminated, truncated, info
 

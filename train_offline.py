@@ -281,6 +281,7 @@ def main(args):
             reward   = reward,
             value    = value,
             done     = done,
+            mask     = getattr(agent, "_last_mask", None),
         )
 
         obs         = next_obs

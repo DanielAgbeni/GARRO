@@ -386,5 +386,11 @@ if __name__ == "__main__":
         default=None,
         help="Override base arrival rate λ in packets/sec (default: from config.yaml)",
     )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        default=1,
+        help="Number of random seeds / trials to aggregate across (default: 1)",
+    )
     args = parser.parse_args()
     main(args)

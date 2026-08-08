@@ -248,23 +248,28 @@ class RolloutBuffer:
     """
 
     def __init__(self):
-        self.states:    List[Dict]  = []   # lightweight telemetry snapshots
-        self.actions:   List[int]   = []
-        self.log_probs: List[float] = []
-        self.rewards:   List[float] = []
-        self.values:    List[float] = []
-        self.dones:     List[bool]  = []
+        self.states:    List[Dict]         = []   # lightweight telemetry snapshots
+        self.actions:   List[int]          = []
+        self.log_probs: List[float]        = []
+        self.rewards:   List[float]        = []
+        self.values:    List[float]        = []
+        self.dones:     List[bool]         = []
+        self.masks:     List[torch.Tensor] = []
 
     @staticmethod
     def _snapshot(G: nx.Graph) -> Dict:
-        """Extract only the dynamic attributes needed for graph conversion."""
+        """Extract dynamic attributes needed for graph conversion."""
         return {
-            "cpu":          dict(nx.get_node_attributes(G, "cpu")),
-            "buffer_occ":   dict(nx.get_node_attributes(G, "buffer_occ")),
-            "ingress_rate": dict(nx.get_node_attributes(G, "ingress_rate")),
-            "egress_rate":  dict(nx.get_node_attributes(G, "egress_rate")),
-            "utilization":  dict(nx.get_edge_attributes(G, "utilization")),
-            "packet_loss":  dict(nx.get_edge_attributes(G, "packet_loss")),
+            "cpu":           dict(nx.get_node_attributes(G, "cpu")),
+            "buffer_occ":    dict(nx.get_node_attributes(G, "buffer_occ")),
+            "ingress_rate":  dict(nx.get_node_attributes(G, "ingress_rate")),
+            "egress_rate":   dict(nx.get_node_attributes(G, "egress_rate")),
+            "is_src":        dict(nx.get_node_attributes(G, "is_src")),
+            "is_dst":        dict(nx.get_node_attributes(G, "is_dst")),
+            "utilization":   dict(nx.get_edge_attributes(G, "utilization")),
+            "packet_loss":   dict(nx.get_edge_attributes(G, "packet_loss")),
+            "queuing_delay": dict(nx.get_edge_attributes(G, "queuing_delay")),
+            "delay":         dict(nx.get_edge_attributes(G, "delay")),
         }
 
     def add(
@@ -275,14 +280,13 @@ class RolloutBuffer:
         reward:   float,
         value:    float,
         done:     bool,
+        mask:     Optional[torch.Tensor] = None,
     ):
-        # Store telemetry snapshot; accept pre-built dicts or nx.Graph
         if isinstance(state, nx.Graph):
             self.states.append(self._snapshot(state))
         elif isinstance(state, dict):
             self.states.append(state)
         else:
-            # Legacy: PyG Data passed directly — fall back to storing as-is
             self.states.append(state)
 
         self.actions.append(action)
@@ -290,6 +294,8 @@ class RolloutBuffer:
         self.rewards.append(reward)
         self.values.append(value)
         self.dones.append(done)
+        if mask is not None:
+            self.masks.append(mask.cpu())
 
     def clear(self):
         self.__init__()
@@ -330,13 +336,13 @@ class FastGraphConverter:
             t = torch.zeros(shape, dtype=torch.float32)
             return t.pin_memory() if self._pin else t
 
-        # Ping-pong buffers (index 0 and 1)
-        self.x_cpu         = [_make_pinned((self.n_real + 1, 5)) for _ in range(2)]
+        # Ping-pong buffers (index 0 and 1) — 6 node features + 1 star flag = 7 total columns
+        self.x_cpu         = [_make_pinned((self.n_real + 1, 7)) for _ in range(2)]
         self._buf_idx      = 0
 
         # Star node flag — same in both buffers
         for buf in self.x_cpu:
-            buf[self.n_real, 4] = 1.0
+            buf[self.n_real, 6] = 1.0
 
         self.edges        = list(G.edges())
         self.n_edges      = len(self.edges)
@@ -394,81 +400,76 @@ class FastGraphConverter:
                 curr += 2
 
         # Pre-allocated numpy arrays for intermediate vectorised ops
-        self._node_vals  = np.empty((self.n_real, 4), dtype=np.float32)
+        self._node_vals  = np.empty((self.n_real, 6), dtype=np.float32)
         self._edge_util  = np.empty(self.n_edges, dtype=np.float32)
         self._edge_loss  = np.empty(self.n_edges, dtype=np.float32)
+        self._edge_delay = np.empty(self.n_edges, dtype=np.float32)
 
     def convert(self, snap) -> Data:
         """
         Build the Data object from a telemetry snapshot dict or nx.Graph.
-
-        Dynamic attributes are written via NumPy advanced indexing (no Python
-        per-element loop).  Transfers use the inactive ping-pong buffer so
-        the previous frame's device tensor is never overwritten mid-flight.
-
-        Parameters
-        ----------
-        snap : dict | nx.Graph
-            Telemetry snapshot produced by RolloutBuffer._snapshot(), or a
-            live nx.Graph (falls back to attribute extraction inline).
         """
-        # ── Unpack snapshot ───────────────────────────────────────────────
         if isinstance(snap, dict):
-            cpu_attr = snap["cpu"]
-            buf_attr = snap["buffer_occ"]
-            ing_attr = snap["ingress_rate"]
-            egr_attr = snap["egress_rate"]
+            cpu_attr  = snap["cpu"]
+            buf_attr  = snap["buffer_occ"]
+            ing_attr  = snap["ingress_rate"]
+            egr_attr  = snap["egress_rate"]
+            src_attr  = snap.get("is_src", {})
+            dst_attr  = snap.get("is_dst", {})
             util_attr = snap["utilization"]
             loss_attr = snap["packet_loss"]
+            q_delay_attr = snap.get("queuing_delay", {})
+            p_delay_attr = snap.get("delay", {})
         else:
-            # Live nx.Graph path (used during select_action)
             cpu_attr  = nx.get_node_attributes(snap, "cpu")
             buf_attr  = nx.get_node_attributes(snap, "buffer_occ")
             ing_attr  = nx.get_node_attributes(snap, "ingress_rate")
             egr_attr  = nx.get_node_attributes(snap, "egress_rate")
+            src_attr  = nx.get_node_attributes(snap, "is_src")
+            dst_attr  = nx.get_node_attributes(snap, "is_dst")
             util_attr = nx.get_edge_attributes(snap, "utilization")
             loss_attr = nx.get_edge_attributes(snap, "packet_loss")
+            q_delay_attr = nx.get_edge_attributes(snap, "queuing_delay")
+            p_delay_attr = nx.get_edge_attributes(snap, "delay")
 
-        # ── Select active ping-pong buffer ────────────────────────────────
         b         = self._buf_idx
         x_buf     = self.x_cpu[b]
         ea_buf    = self.edge_attr_cpu[b]
-        self._buf_idx = 1 - b  # flip for next call
+        self._buf_idx = 1 - b
 
-        # ── Vectorised node feature write ─────────────────────────────────
-        # Build a (n_real, 4) numpy array, then write in one tensor assignment
         nodes = self.nodes
         for col, attr_dict, default in [
             (0, cpu_attr,  0.5),
             (1, buf_attr,  0.3),
             (2, ing_attr,  0.5),
             (3, egr_attr,  0.5),
+            (4, src_attr,  0.0),
+            (5, dst_attr,  0.0),
         ]:
             self._node_vals[:, col] = [attr_dict.get(n, default) for n in nodes]
 
-        # Single assignment into pinned buffer (avoids per-element Python calls)
-        x_buf[:self.n_real, :4] = torch.from_numpy(self._node_vals)
+        x_buf[:self.n_real, :6] = torch.from_numpy(self._node_vals)
 
-        # ── Vectorised edge dynamic attribute write ───────────────────────
         edges = self.edges
         for i, (u, v) in enumerate(edges):
-            self._edge_util[i] = util_attr.get((u, v), util_attr.get((v, u), 0.0))
-            self._edge_loss[i] = loss_attr.get((u, v), loss_attr.get((v, u), 0.0))
+            self._edge_util[i]  = util_attr.get((u, v), util_attr.get((v, u), 0.0))
+            self._edge_loss[i]  = loss_attr.get((u, v), loss_attr.get((v, u), 0.0))
+            p_del = p_delay_attr.get((u, v), p_delay_attr.get((v, u), 1.0))
+            q_del = q_delay_attr.get((u, v), q_delay_attr.get((v, u), 0.0))
+            self._edge_delay[i] = np.clip((p_del + min(q_del, 500.0)) / 500.0, 0.0, 1.0)
 
-        # Compute edge slot indices (each undirected edge → 2 directed slots)
         fwd_slots = np.arange(0, 2 * self.n_edges, 2, dtype=np.int64)
         rev_slots = fwd_slots + 1
 
-        # Numpy advanced indexing — single write per attribute column
         ea_np = ea_buf.numpy()
         ea_np[fwd_slots, 1] = self._edge_util
         ea_np[rev_slots, 1] = self._edge_util
+        ea_np[fwd_slots, 2] = self._edge_delay
+        ea_np[rev_slots, 2] = self._edge_delay
         ea_np[fwd_slots, 3] = self._edge_loss
         ea_np[rev_slots, 3] = self._edge_loss
 
-        # ── Non-blocking H→D transfer (no clone needed — buffer won't be
-        #    overwritten until the *next* call flips _buf_idx back) ────────
-        x_dev        = x_buf.to(self.device, non_blocking=True)
+        x_dev         = x_buf.to(self.device, non_blocking=True)
         edge_attr_dev = ea_buf.to(self.device, non_blocking=True)
 
         return Data(
@@ -752,6 +753,7 @@ class PPOAgent:
             action, log_prob, value = self.ac_net.get_action(
                 latent, mask, deterministic=deterministic
             )
+        self._last_mask = mask
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     # ── GAE Advantage Estimation (truly vectorised via scipy lfilter) ──────────
@@ -870,6 +872,12 @@ class PPOAgent:
                     all_latents_list.append(self.encoder(c_batch))
         all_latents_det = torch.cat(all_latents_list, dim=0)   # [T, hidden_dim]
 
+        # ── Action masks tensor for batch PPO updates ─────────────────────
+        if len(self.buffer.masks) == T:
+            masks_tensor = torch.stack(self.buffer.masks).to(self.device, non_blocking=True)
+        else:
+            masks_tensor = None
+
         # ── AC-Net mini-batch PPO updates (no encoder grad) ───────────────
         metrics: Dict[str, list] = {
             "policy_loss": [], "value_loss": [],
@@ -886,6 +894,7 @@ class PPOAgent:
                 b_old_lp  = old_log_probs[idx]
                 b_adv     = adv_tensor[idx]
                 b_returns = ret_tensor[idx]
+                b_masks   = masks_tensor[idx] if masks_tensor is not None else None
 
                 with torch.autocast(
                     device_type=self.device.type,
@@ -897,6 +906,10 @@ class PPOAgent:
                         logits, nan=0.0, posinf=20.0, neginf=-20.0
                     )
                     logits = torch.clamp(logits, -20.0, 20.0)
+                    if b_masks is not None and bool(b_masks.any().item()):
+                        fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
+                        logits = logits.masked_fill(~b_masks, fill_val)
+
                     dist          = Categorical(logits=logits)
                     new_log_probs = dist.log_prob(b_actions)
                     entropy       = dist.entropy().mean()
@@ -917,16 +930,16 @@ class PPOAgent:
                 if not torch.isfinite(loss):
                     continue
 
-                self.opt_ac.zero_grad(set_to_none=True)  # frees grad memory instead of zero-filling
+                self.opt_ac.zero_grad(set_to_none=True)
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.opt_ac)
                 grad_norm = nn.utils.clip_grad_norm_(self.ac_net.parameters(), max_norm=0.5)
                 if not torch.isfinite(grad_norm):
                     self.opt_ac.zero_grad(set_to_none=True)
-                    self.scaler.update()  # must advance scaler even when skipping step
+                    self.scaler.update()
                     continue
                 self.scaler.step(self.opt_ac)
-                self.scaler.update()  # one update() per backward() — called here, not outside the loop
+                self.scaler.update()
 
                 with torch.no_grad():
                     approx_kl = (b_old_lp - new_log_probs).mean().item()
@@ -937,8 +950,6 @@ class PPOAgent:
                 metrics["approx_kl"].append(approx_kl)
 
         # ── Encoder gradient pass — mini-batch graph encoding ──────────────
-        # Encodes ONLY a mini-batch of size enc_size (512 graphs) with gradients
-        # enabled, preventing CUDA Out-Of-Memory errors on large rollout buffers.
         enc_size = min(self.batch_size, T)
         enc_idx  = torch.randperm(T, device=self.device)[:enc_size]
         enc_idx_cpu = enc_idx.cpu().tolist()
@@ -958,6 +969,12 @@ class PPOAgent:
                 logits_e, nan=0.0, posinf=20.0, neginf=-20.0
             )
             logits_e = torch.clamp(logits_e, -20.0, 20.0)
+            if masks_tensor is not None:
+                enc_masks = masks_tensor[enc_idx]
+                if bool(enc_masks.any().item()):
+                    fill_val = -1e4 if logits_e.dtype == torch.float16 else -1e9
+                    logits_e = logits_e.masked_fill(~enc_masks, fill_val)
+
             dist_e           = Categorical(logits=logits_e)
             new_lp_e         = dist_e.log_prob(actions[enc_idx])
             ent_e            = dist_e.entropy().mean()
