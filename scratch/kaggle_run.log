@@ -1,0 +1,229 @@
+[MultiGPU] 2× T4 detected — batch_size=512, update_interval=2048, lr_actor=2.00e-04, lr_critic=1.00e-03
+
+================================================================
+  GARRO Offline Training
+  Topology    : NSFNET
+  Episodes    : 10,000
+────────────────────────────────────────────────────────────────
+  Device      : cuda  (Tesla T4, 15.6 GB VRAM)
+  CPU cores   : 4
+  GPU count   : 2
+  Batch size  : 512  (CUDA auto-scaled (high-throughput))
+  Update every: 2048 steps
+  Compile     : True
+================================================================
+
+[MM1KEnv] Pre-computing K=5 shortest paths for 14 nodes using 4 threads …
+[MM1KEnv] Path pre-computation done.
+[MM1KEnv] Precomputed average path length: 2.71 hops
+[MM1KEnv] Scaling TrafficGenerator base_rate from 100.0 to 55.38 to target average edge load
+[PPO] update_interval clamped: config=1024 → 2048 (RAM floor=2048, ceiling=8192, available RAM=31.4 GB)
+[PPO] LR scheduler T_max=4882 updates (50000 eps × 200 steps ÷ 2048 update_interval)
+[Init] Nodes: 14 | Edges: 21 | K-paths: 5
+Device       : cuda
+CPU cores    : 4
+AMP dtype    : torch.float16 (enabled=True)
+Compile mode : torch.compile(default,dynamic)
+GPU          : Tesla T4 (15.6 GB VRAM)
+cuDNN bench  : True
+TF32 matmul  : True
+TF32 cuDNN   : True
+
+Training:   0%|                                      | 0/10000 [00:00<?, ?ep/s]W0808 13:00:55.720000 90 torch/_inductor/utils.py:1679] [0/0_1] Not enough SMs to use max_autotune_gemm mode
+  ↳ PPO update | PL: -0.0004  VL: 3300.0091  Ent: 1.6082  KL: 0.0011
+  ↳ PPO update | PL: +0.0033  VL: 2752.2542  Ent: 1.5992  KL: 0.0031
+  ↳ PPO update | PL: +0.0010  VL: 1711.8538  Ent: 1.6052  KL: 0.0020
+  ↳ PPO update | PL: +0.0057  VL: 765.8274  Ent: 1.5996  KL: 0.0062
+  ↳ PPO update | PL: +0.0036  VL: 809.9922  Ent: 1.6024  KL: 0.0036
+  ↳ PPO update | PL: +0.0068  VL: 985.4198  Ent: 1.5962  KL: 0.0056
+  ↳ PPO update | PL: +0.0268  VL: 1104.4203  Ent: 1.5842  KL: 0.0208
+  ↳ PPO update | PL: +0.0084  VL: 1187.0930  Ent: 1.5565  KL: 0.0067
+  ↳ PPO update | PL: +0.0067  VL: 1283.5340  Ent: 1.5791  KL: 0.0057
+  ↳ PPO update | PL: +0.0107  VL: 1219.0996  Ent: 1.5822  KL: 0.0084
+  ↳ PPO update | PL: +0.0056  VL: 1222.4538  Ent: 1.5720  KL: 0.0041
+  ↳ PPO update | PL: +0.0012  VL: 1210.6011  Ent: 1.5677  KL: 0.0036
+  ↳ PPO update | PL: +0.0044  VL: 1349.1075  Ent: 1.5773  KL: 0.0042
+  ↳ PPO update | PL: +0.0116  VL: 1150.6925  Ent: 1.5044  KL: 0.0106
+  ↳ PPO update | PL: +0.0086  VL: 1107.2347  Ent: 1.4184  KL: 0.0068
+  ↳ PPO update | PL: +0.0011  VL: 1044.1961  Ent: 1.4468  KL: 0.0027
+  ↳ PPO update | PL: +0.0194  VL: 1040.9211  Ent: 1.4418  KL: 0.0111
+  ↳ PPO update | PL: +0.0129  VL: 1047.3470  Ent: 1.5073  KL: 0.0073
+  ↳ PPO update | PL: +0.0219  VL: 1048.2258  Ent: 1.4728  KL: 0.0160
+  ↳ PPO update | PL: +0.0247  VL: 1045.9943  Ent: 1.3720  KL: 0.0183
+  ↳ PPO update | PL: +0.0158  VL: 1174.6309  Ent: 1.5370  KL: 0.0167
+  ↳ PPO update | PL: +0.0033  VL: 1125.4095  Ent: 1.5086  KL: 0.0042
+  ↳ PPO update | PL: +0.0017  VL: 1147.0842  Ent: 1.5313  KL: 0.0033
+  ↳ PPO update | PL: -0.0000  VL: 1166.8815  Ent: 1.5131  KL: 0.0024
+  ↳ PPO update | PL: -0.0005  VL: 1170.5692  Ent: 1.5260  KL: 0.0039
+  ↳ PPO update | PL: +0.0503  VL: 1203.8631  Ent: 1.5104  KL: 0.0368
+  ↳ PPO update | PL: +0.0154  VL: 1105.1155  Ent: 1.4458  KL: 0.0113
+  ↳ PPO update | PL: +0.0024  VL: 1007.8338  Ent: 1.4872  KL: 0.0064
+  ↳ PPO update | PL: +0.0004  VL: 1089.7431  Ent: 1.5002  KL: 0.0037
+  ↳ PPO update | PL: +0.0018  VL: 1235.7201  Ent: 1.4922  KL: 0.0044
+  ↳ PPO update | PL: +0.0014  VL: 1180.2376  Ent: 1.4740  KL: 0.0030
+  ↳ PPO update | PL: +0.0004  VL: 1218.0193  Ent: 1.4833  KL: 0.0020
+  ↳ PPO update | PL: +0.0034  VL: 1177.4617  Ent: 1.3859  KL: 0.0045
+  ↳ PPO update | PL: +0.0063  VL: 1380.1195  Ent: 1.3940  KL: 0.0060
+  ↳ PPO update | PL: -0.0002  VL: 1225.2737  Ent: 1.4031  KL: 0.0025
+  ↳ PPO update | PL: +0.0099  VL: 1179.1493  Ent: 1.3800  KL: 0.0078
+  ↳ PPO update | PL: +0.0092  VL: 1108.4373  Ent: 1.1104  KL: 0.0092
+  ↳ PPO update | PL: +0.0053  VL: 1276.8064  Ent: 1.0209  KL: 0.0034
+  ↳ PPO update | PL: +0.0041  VL: 1092.8124  Ent: 1.0718  KL: 0.0005
+  ↳ PPO update | PL: +0.0018  VL: 1096.9643  Ent: 1.0620  KL: 0.0020
+  ↳ PPO update | PL: +0.0047  VL: 1089.2753  Ent: 1.0629  KL: 0.0063
+  ↳ PPO update | PL: +0.0028  VL: 1061.7180  Ent: 1.0726  KL: 0.0028
+  ↳ PPO update | PL: +0.0050  VL: 1083.9261  Ent: 1.0651  KL: 0.0040
+  ↳ PPO update | PL: +0.0079  VL: 1050.2269  Ent: 1.0391  KL: 0.0054
+  ↳ PPO update | PL: +0.0079  VL: 936.4416  Ent: 0.8609  KL: 0.0072
+  ↳ PPO update | PL: +0.0135  VL: 956.5573  Ent: 0.7662  KL: 0.0186
+  ↳ PPO update | PL: +0.0115  VL: 1042.6957  Ent: 0.8844  KL: 0.0123
+  ↳ PPO update | PL: +0.0044  VL: 914.1783  Ent: 0.9259  KL: 0.0048
+  ↳ PPO update | PL: +0.0033  VL: 913.2985  Ent: 0.9745  KL: 0.0043
+  ↳ PPO update | PL: +0.0019  VL: 874.2005  Ent: 1.0059  KL: 0.0030
+  ↳ PPO update | PL: +0.0081  VL: 993.9880  Ent: 1.0789  KL: 0.0076
+  ↳ PPO update | PL: +0.0249  VL: 981.8580  Ent: 1.2872  KL: 0.0178
+  ↳ PPO update | PL: +0.0047  VL: 883.5756  Ent: 1.2152  KL: 0.0024
+  ↳ PPO update | PL: +0.0022  VL: 952.6963  Ent: 1.2026  KL: 0.0002
+  ↳ PPO update | PL: +0.0088  VL: 1016.3974  Ent: 1.1986  KL: 0.0101
+  ↳ PPO update | PL: +0.0062  VL: 925.9301  Ent: 1.2187  KL: 0.0072
+  ↳ PPO update | PL: +0.0174  VL: 979.5079  Ent: 1.2133  KL: 0.0122
+  ↳ PPO update | PL: +0.0533  VL: 1075.0056  Ent: 1.2351  KL: 0.0413
+  ↳ PPO update | PL: +0.0391  VL: 1232.0379  Ent: 1.2656  KL: 0.0369
+  ↳ PPO update | PL: +0.0621  VL: 1340.1684  Ent: 1.2552  KL: 0.0704
+  ↳ PPO update | PL: +0.1112  VL: 1411.8921  Ent: 1.2899  KL: 0.1166
+  ↳ PPO update | PL: +0.0463  VL: 1375.3917  Ent: 0.6521  KL: 0.2472
+  ↳ PPO update | PL: +0.0007  VL: 1607.9014  Ent: 0.5776  KL: 0.0002
+  ↳ PPO update | PL: +0.0101  VL: 1582.3385  Ent: 0.5728  KL: 0.0105
+  ↳ PPO update | PL: +0.0150  VL: 1573.6430  Ent: 0.5476  KL: 0.0087
+  ↳ PPO update | PL: +0.0548  VL: 1581.9677  Ent: 0.1093  KL: 0.2315
+  ↳ PPO update | PL: -0.0003  VL: 1609.7655  Ent: 0.0586  KL: 0.0004
+  ↳ PPO update | PL: +0.0000  VL: 1500.0637  Ent: 0.0760  KL: 0.0006
+  ↳ PPO update | PL: +0.0014  VL: 1460.7959  Ent: 0.1090  KL: 0.0014
+  ↳ PPO update | PL: -0.0004  VL: 1460.6153  Ent: 0.1431  KL: 0.0030
+  ↳ PPO update | PL: +0.0017  VL: 1488.0627  Ent: 0.1985  KL: 0.0020
+  ↳ PPO update | PL: +0.0013  VL: 1446.2495  Ent: 0.1866  KL: 0.0027
+  ↳ PPO update | PL: +0.0031  VL: 1394.1113  Ent: 0.2375  KL: 0.0030
+  ↳ PPO update | PL: +0.0018  VL: 1411.1071  Ent: 0.2436  KL: 0.0010
+  ↳ PPO update | PL: +0.0032  VL: 1372.3494  Ent: 0.2670  KL: 0.0042
+  ↳ PPO update | PL: +0.0030  VL: 1469.3250  Ent: 0.2218  KL: 0.0019
+  ↳ PPO update | PL: +0.0020  VL: 1525.9901  Ent: 0.3054  KL: 0.0008
+  ↳ PPO update | PL: +0.0009  VL: 1449.1174  Ent: 0.2953  KL: 0.0025
+  ↳ PPO update | PL: +0.0021  VL: 1563.8320  Ent: 0.3118  KL: 0.0027
+  ↳ PPO update | PL: +0.0094  VL: 1604.9200  Ent: 0.4034  KL: 0.0099
+  ↳ PPO update | PL: +0.0183  VL: 1516.0105  Ent: 0.6084  KL: 0.0204
+  ↳ PPO update | PL: +0.0027  VL: 1556.7960  Ent: 0.8697  KL: 0.0032
+  ↳ PPO update | PL: +0.0060  VL: 1399.2368  Ent: 0.7549  KL: 0.0057
+  ↳ PPO update | PL: +0.0064  VL: 1600.0145  Ent: 0.6915  KL: 0.0053
+  ↳ PPO update | PL: +0.0050  VL: 1511.3251  Ent: 0.5860  KL: 0.0000
+  ↳ PPO update | PL: +0.0027  VL: 1484.8841  Ent: 0.5916  KL: 0.0040
+  ↳ PPO update | PL: +0.0086  VL: 1493.9119  Ent: 0.5995  KL: 0.0082
+  ↳ PPO update | PL: +0.0001  VL: 1734.6184  Ent: 0.5915  KL: 0.0015
+  ↳ PPO update | PL: +0.0013  VL: 1638.2499  Ent: 0.5550  KL: 0.0017
+  ↳ PPO update | PL: +0.0147  VL: 1533.0627  Ent: 0.3771  KL: 0.0242
+  ↳ PPO update | PL: +0.0045  VL: 1480.4408  Ent: 0.5657  KL: 0.0030
+  ↳ PPO update | PL: +0.0051  VL: 1642.3872  Ent: 0.5803  KL: 0.0039
+  ↳ PPO update | PL: +0.0097  VL: 1611.4046  Ent: 0.5120  KL: 0.0077
+  ↳ PPO update | PL: +0.0393  VL: 1496.8651  Ent: 0.5881  KL: 0.0328
+  ↳ PPO update | PL: +0.0254  VL: 1505.6331  Ent: 0.0922  KL: 0.1504
+  ↳ PPO update | PL: +0.0029  VL: 1518.7534  Ent: 0.1000  KL: 0.0021
+  ↳ PPO update | PL: +0.0001  VL: 1442.9562  Ent: 0.1131  KL: 0.0005
+[Ep   1000/10000] Avg Reward: +380.9445 | Steps: 200,000 | Speed: 0.7 ep/s
+  ↳ PPO update | PL: +0.0009  VL: 1541.8473  Ent: 0.1118  KL: 0.0004
+  ↳ PPO update | PL: +0.0029  VL: 1420.8055  Ent: 0.0953  KL: 0.0029
+  ↳ PPO update | PL: +0.0013  VL: 1429.2608  Ent: 0.1300  KL: 0.0031
+  ↳ PPO update | PL: +0.0015  VL: 1496.2156  Ent: 0.2070  KL: 0.0123
+  ↳ PPO update | PL: +0.0087  VL: 1530.4093  Ent: 0.2456  KL: 0.0183
+  ↳ PPO update | PL: +0.0096  VL: 1430.1192  Ent: 0.3807  KL: 0.0064
+  ↳ PPO update | PL: +0.0085  VL: 1464.6416  Ent: 0.4045  KL: 0.0154
+  ↳ PPO update | PL: +0.0033  VL: 1520.8876  Ent: 0.0501  KL: 0.0154
+  ↳ PPO update | PL: +0.0013  VL: 1407.0007  Ent: 0.0432  KL: 0.0004
+  ↳ PPO update | PL: +0.0002  VL: 1377.2968  Ent: 0.0269  KL: 0.0005
+  ↳ PPO update | PL: -0.0004  VL: 1354.3338  Ent: 0.0236  KL: 0.0015
+  ↳ PPO update | PL: -0.0002  VL: 1572.2621  Ent: 0.0216  KL: 0.0002
+  ↳ PPO update | PL: +0.0002  VL: 1481.3600  Ent: 0.0259  KL: 0.0001
+  ↳ PPO update | PL: +0.0000  VL: 1383.4107  Ent: 0.0298  KL: -0.0007
+  ↳ PPO update | PL: +0.0006  VL: 1502.1515  Ent: 0.0227  KL: 0.0010
+  ↳ PPO update | PL: +0.0005  VL: 1608.8438  Ent: 0.0166  KL: -0.0000
+  ↳ PPO update | PL: -0.0001  VL: 1577.9446  Ent: 0.0152  KL: -0.0002
+  ↳ PPO update | PL: +0.0001  VL: 1501.0201  Ent: 0.0183  KL: 0.0004
+  ↳ PPO update | PL: -0.0001  VL: 1517.2075  Ent: 0.0236  KL: 0.0003
+  ↳ PPO update | PL: -0.0001  VL: 1585.9101  Ent: 0.0322  KL: 0.0010
+  ↳ PPO update | PL: -0.0001  VL: 1423.7317  Ent: 0.0586  KL: 0.0014
+  ↳ PPO update | PL: +0.0010  VL: 1415.4398  Ent: 0.0973  KL: 0.0000
+  ↳ PPO update | PL: +0.0026  VL: 1405.8193  Ent: 0.1220  KL: 0.0025
+  ↳ PPO update | PL: +0.0005  VL: 1401.1397  Ent: 0.1539  KL: -0.0009
+  ↳ PPO update | PL: +0.0013  VL: 1312.4696  Ent: 0.1844  KL: 0.0005
+  ↳ PPO update | PL: +0.0013  VL: 1252.4820  Ent: 0.1900  KL: -0.0010
+  ↳ PPO update | PL: +0.0014  VL: 1233.7629  Ent: 0.2404  KL: 0.0036
+  ↳ PPO update | PL: +0.0038  VL: 1312.8902  Ent: 0.2943  KL: 0.0097
+  ↳ PPO update | PL: +0.0013  VL: 1404.9953  Ent: 0.2049  KL: 0.0011
+  ↳ PPO update | PL: +0.0049  VL: 1428.2650  Ent: 0.2493  KL: 0.0087
+  ↳ PPO update | PL: +0.0040  VL: 1424.0893  Ent: 0.2645  KL: 0.0055
+  ↳ PPO update | PL: +0.0070  VL: 1399.6848  Ent: 0.3592  KL: 0.0101
+  ↳ PPO update | PL: +0.0043  VL: 1525.9542  Ent: 0.3305  KL: 0.0040
+  ↳ PPO update | PL: +0.0057  VL: 1421.0623  Ent: 0.2973  KL: 0.0106
+  ↳ PPO update | PL: +0.0081  VL: 1454.0284  Ent: 0.2586  KL: 0.0191
+  ↳ PPO update | PL: -0.0007  VL: 1402.4091  Ent: 0.1176  KL: 0.0058
+  ↳ PPO update | PL: +0.0005  VL: 1430.4598  Ent: 0.2672  KL: 0.0010
+  ↳ PPO update | PL: +0.0032  VL: 1357.8590  Ent: 0.2530  KL: 0.0018
+  ↳ PPO update | PL: +0.0016  VL: 1220.9934  Ent: 0.2559  KL: 0.0035
+  ↳ PPO update | PL: +0.0026  VL: 1064.4622  Ent: 0.4085  KL: 0.0021
+  ↳ PPO update | PL: +0.0071  VL: 1021.9500  Ent: 0.6101  KL: 0.0085
+  ↳ PPO update | PL: +0.0145  VL: 983.6021  Ent: 0.7873  KL: 0.0131
+  ↳ PPO update | PL: +0.0049  VL: 1039.0850  Ent: 0.9502  KL: 0.0110
+  ↳ PPO update | PL: +0.0062  VL: 1195.0542  Ent: 0.9178  KL: 0.0046
+  ↳ PPO update | PL: +0.0648  VL: 1628.2450  Ent: 0.6374  KL: 0.0690
+  ↳ PPO update | PL: +0.0618  VL: 2077.1057  Ent: 0.0501  KL: 0.8540
+  ↳ PPO update | PL: -0.0000  VL: 2007.5179  Ent: 0.0009  KL: 0.0000
+  ↳ PPO update | PL: -0.0000  VL: 1716.0735  Ent: 0.0009  KL: 0.0000
+  ↳ PPO update | PL: +0.0017  VL: 1406.2591  Ent: 0.0024  KL: -0.0004
+  ↳ PPO update | PL: +0.0005  VL: 1229.8573  Ent: 0.0027  KL: 0.0007
+  ↳ PPO update | PL: +0.0010  VL: 1165.7398  Ent: 0.0041  KL: -0.0007
+  ↳ PPO update | PL: +0.0000  VL: 1181.7794  Ent: 0.0026  KL: 0.0002
+  ↳ PPO update | PL: -0.0000  VL: 1088.5656  Ent: 0.0036  KL: 0.0001
+  ↳ PPO update | PL: -0.0001  VL: 1200.7344  Ent: 0.0040  KL: 0.0009
+  ↳ PPO update | PL: +0.0003  VL: 1010.5098  Ent: 0.0080  KL: 0.0017
+  ↳ PPO update | PL: +0.0012  VL: 1139.8599  Ent: 0.0087  KL: 0.0017
+  ↳ PPO update | PL: -0.0004  VL: 994.7481  Ent: 0.0150  KL: 0.0006
+  ↳ PPO update | PL: -0.0003  VL: 1270.6289  Ent: 0.0213  KL: 0.0013
+  ↳ PPO update | PL: +0.0004  VL: 1386.1271  Ent: 0.0169  KL: 0.0012
+  ↳ PPO update | PL: -0.0010  VL: 1248.0230  Ent: 0.0345  KL: 0.0030
+  ↳ PPO update | PL: +0.0016  VL: 1085.6417  Ent: 0.1510  KL: 0.0110
+  ↳ PPO update | PL: +0.0027  VL: 1190.8678  Ent: 0.1530  KL: -0.0006
+  ↳ PPO update | PL: +0.0034  VL: 996.5673  Ent: 0.2418  KL: 0.0097
+  ↳ PPO update | PL: +0.0189  VL: 889.4726  Ent: 0.2862  KL: 0.0309
+  ↳ PPO update | PL: +0.0585  VL: 843.1115  Ent: 0.5156  KL: 0.0877
+  ↳ PPO update | PL: +0.0444  VL: 840.5817  Ent: 0.4110  KL: 0.0750
+  ↳ PPO update | PL: +0.0383  VL: 696.3602  Ent: 0.3244  KL: 0.1039
+  ↳ PPO update | PL: +0.0065  VL: 650.4065  Ent: 0.7482  KL: 0.0056
+  ↳ PPO update | PL: +0.0101  VL: 658.7550  Ent: 0.6251  KL: 0.0082
+  ↳ PPO update | PL: +0.0207  VL: 730.0846  Ent: 0.3828  KL: 0.0327
+  ↳ PPO update | PL: +0.0025  VL: 746.6208  Ent: 0.1361  KL: 0.0020
+  ↳ PPO update | PL: +0.0014  VL: 724.0549  Ent: 0.0653  KL: -0.0011
+  ↳ PPO update | PL: -0.0001  VL: 690.9125  Ent: 0.0552  KL: 0.0013
+  ↳ PPO update | PL: +0.0011  VL: 953.9554  Ent: 0.0809  KL: 0.0033
+  ↳ PPO update | PL: +0.0002  VL: 900.1530  Ent: 0.1524  KL: 0.0044
+  ↳ PPO update | PL: +0.0007  VL: 877.4630  Ent: 0.2113  KL: 0.0113
+  ↳ PPO update | PL: +0.0006  VL: 920.1841  Ent: 0.1998  KL: 0.0063
+  ↳ PPO update | PL: +0.0058  VL: 1041.2958  Ent: 0.2032  KL: 0.0071
+  ↳ PPO update | PL: +0.0690  VL: 1144.9785  Ent: 0.4080  KL: 0.1244
+  ↳ PPO update | PL: +0.0017  VL: 975.1380  Ent: 0.0024  KL: 0.0649
+  ↳ PPO update | PL: -0.0000  VL: 810.4300  Ent: 0.0000  KL: 0.0000
+  ↳ PPO update | PL: -0.0000  VL: 783.1596  Ent: 0.0000  KL: 0.0000
+  ↳ PPO update | PL: -0.0000  VL: 909.6359  Ent: 0.0000  KL: 0.0000
+  ↳ PPO update | PL: -0.0000  VL: 757.3609  Ent: 0.0000  KL: 0.0000
+  ↳ PPO update | PL: -0.0000  VL: 649.1656  Ent: 0.0000  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 675.6330  Ent: 0.0000  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 705.8220  Ent: 0.0000  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 634.7100  Ent: 0.0002  KL: -0.0000
+  ↳ PPO update | PL: -0.0001  VL: 544.1994  Ent: 0.0005  KL: 0.0002
+  ↳ PPO update | PL: -0.0000  VL: 576.4662  Ent: 0.0004  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 690.8185  Ent: 0.0002  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 663.2970  Ent: 0.0002  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 623.4598  Ent: 0.0002  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 583.8862  Ent: 0.0004  KL: -0.0000
+  ↳ PPO update | PL: -0.0000  VL: 648.9888  Ent: 0.0008  KL: -0.0001
+  ↳ PPO update | PL: -0.0000  VL: 606.8714  Ent: 0.0008  KL: -0.0001
+  ↳ PPO update | PL: -0.0000  VL: 622.4013  Ent: 0.0009  KL: -0.0001
+  ↳ PPO update | PL: -0.0000  VL: 629.5805  Ent: 0.0007  KL: -0.0000
+[Ep   2000/10000] Avg Reward: +386.4502 | Steps: 400,000 | Speed: 0.7 ep/s

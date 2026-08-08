@@ -157,16 +157,16 @@ def main(args):
             # samples; doubling the global size keeps per-GPU load identical.
             batch_size      *= n_gpus                 # 256 → 512 for T4×2
             update_interval *= n_gpus                 # 1024 → 2048 for T4×2
-            # Linear LR scaling rule (Goyal et al., 2017):
-            # scale LR proportionally when effective batch size increases.
+            # Square-root LR scaling rule for PPO (prevents catastrophic policy collapse):
+            # On-policy PPO with larger rollouts should NOT scale LR linearly.
             config["ppo"]["lr_actor"]  = min(
-                config["ppo"]["lr_actor"]  * n_gpus, 5e-4
+                config["ppo"]["lr_actor"]  * (n_gpus ** 0.5), 3e-4
             )
             config["ppo"]["lr_critic"] = min(
-                config["ppo"]["lr_critic"] * n_gpus, 2e-3
+                config["ppo"]["lr_critic"] * (n_gpus ** 0.5), 1e-3
             )
             print(
-                f"[MultiGPU] {n_gpus}× T4 detected — "
+                f"[MultiGPU] {n_gpus}× GPU detected — "
                 f"batch_size={batch_size}, update_interval={update_interval}, "
                 f"lr_actor={config['ppo']['lr_actor']:.2e}, "
                 f"lr_critic={config['ppo']['lr_critic']:.2e}"
@@ -222,7 +222,9 @@ def main(args):
         num_nodes=G.number_of_nodes(),
         device=device,
         compile_model=compile_model,
+        total_episodes=total_episodes,
     )
+
 
     print(f"[Init] Nodes: {G.number_of_nodes()} | "
           f"Edges: {G.number_of_edges()} | "

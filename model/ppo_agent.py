@@ -502,6 +502,7 @@ class PPOAgent:
         num_nodes:     int,
         device:        Optional[torch.device] = None,
         compile_model: bool = True,
+        total_episodes: Optional[int] = None,
     ):
         _configure_threads()
 
@@ -509,6 +510,7 @@ class PPOAgent:
         self.k_paths   = k_paths
         self.num_nodes = num_nodes
         self.device    = device if device is not None else _best_device()
+        self._total_episodes_override = total_episodes
 
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark     = True
@@ -612,6 +614,7 @@ class PPOAgent:
         self.update_epochs = ppo_cfg["update_epochs"]
         self.batch_size    = ppo_cfg["batch_size"]
         self.entropy_coef  = ppo_cfg["entropy_coef"]
+        self.target_kl     = ppo_cfg.get("target_kl", 0.02)
 
         self.buffer = RolloutBuffer()
 
@@ -671,11 +674,7 @@ class PPOAgent:
         # Expected update calls ≈ (total_episodes × steps_per_episode)
         #                          ──────────────────────────────────────
         #                                  update_interval
-        #
-        # Using offline_episodes directly (old behaviour) caused the LR to
-        # hit eta_min after only ~300 calls (~3 000 episodes on GEANT2),
-        # freezing the model well before any meaningful learning occurred.
-        _total_episodes = config.get("training", {}).get("offline_episodes", 10000)
+        _total_episodes = self._total_episodes_override or config.get("training", {}).get("offline_episodes", 10000)
         _steps_per_ep   = config.get("training", {}).get("max_steps_per_episode", 200)
         _t_max = max(100, (_total_episodes * _steps_per_ep) // self._update_interval)
         self.scheduler_encoder = CosineAnnealingLR(
@@ -689,6 +688,7 @@ class PPOAgent:
             f"({_total_episodes} eps × {_steps_per_ep} steps "
             f"÷ {self._update_interval} update_interval)"
         )
+
 
         # Mixed precision scaler (only meaningful for CUDA float16)
         self.scaler = torch.amp.GradScaler(
@@ -884,7 +884,10 @@ class PPOAgent:
             "entropy": [],     "approx_kl": [],
         }
 
-        for _ in range(self.update_epochs):
+        early_stopped = False
+        for epoch in range(self.update_epochs):
+            if early_stopped:
+                break
             indices = torch.randperm(T, device=self.device)
             for start in range(0, T, self.batch_size):
                 idx = indices[start: start + self.batch_size]
@@ -903,9 +906,9 @@ class PPOAgent:
                 ):
                     logits, values_pred = self.ac_net(b_latents)
                     logits = torch.nan_to_num(
-                        logits, nan=0.0, posinf=20.0, neginf=-20.0
+                        logits, nan=0.0, posinf=10.0, neginf=-10.0
                     )
-                    logits = torch.clamp(logits, -20.0, 20.0)
+                    logits = torch.clamp(logits, -10.0, 10.0)
                     if b_masks is not None and bool(b_masks.any().item()):
                         fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
                         logits = logits.masked_fill(~b_masks, fill_val)
@@ -948,6 +951,12 @@ class PPOAgent:
                 metrics["value_loss"].append(value_loss.item())
                 metrics["entropy"].append(entropy.item())
                 metrics["approx_kl"].append(approx_kl)
+
+                # Target KL early stopping (CleanRL / SB3 standard)
+                if self.target_kl is not None and approx_kl > 1.5 * self.target_kl:
+                    early_stopped = True
+                    break
+
 
         # ── Encoder gradient pass — mini-batch graph encoding ──────────────
         enc_size = min(self.batch_size, T)

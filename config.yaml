@@ -23,6 +23,7 @@ ppo:
   update_epochs: 5                # PPO update epochs (reduced 10→5 to match tighter clip_epsilon)
   batch_size: 256                 # Mini-batch size (increased 64→256 for more stable gradient estimates)
   entropy_coef: 0.03              # Entropy bonus (increased 0.01→0.03; forces exploration from plateau)
+  target_kl: 0.02                 # Target KL divergence early stopping threshold (prevents catastrophic policy collapse)
 
 training:
   offline_episodes: 50000         # Total training episodes
