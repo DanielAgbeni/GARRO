@@ -1030,16 +1030,23 @@ class PPOAgent:
         Fast-forward LR schedulers to match the resumed episode index.
         Sets LR to the exact target step along the new T_max cosine curve.
         """
+        import warnings
         _steps_per_ep = self.config.get("training", {}).get("max_steps_per_episode", 200)
         target_step = (ep_idx * _steps_per_ep) // self._update_interval
         if target_step > 0:
-            self.scheduler_encoder.step(target_step)
-            self.scheduler_ac.step(target_step)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.scheduler_encoder.last_epoch = target_step
+                self.scheduler_ac.last_epoch = target_step
+                self.opt_encoder.param_groups[0]["lr"] = self.scheduler_encoder.get_lr()[0]
+                for i, group in enumerate(self.opt_ac.param_groups):
+                    group["lr"] = self.scheduler_ac.get_lr()[i if i < len(self.scheduler_ac.get_lr()) else 0]
             print(
                 f"[PPO] LR schedulers synchronized to update #{target_step} / {self.scheduler_encoder.T_max} "
                 f"(lr_actor={self.opt_encoder.param_groups[0]['lr']:.2e}, "
                 f"lr_critic={self.opt_ac.param_groups[1]['lr']:.2e})"
             )
+
 
     # ── Checkpoint I/O ────────────────────────────────────────────────────────
 

@@ -263,6 +263,7 @@ def main(args):
     pbar = tqdm(total=total_episodes, initial=ep_idx, desc="Training", unit="ep",
                 dynamic_ncols=True)
 
+    initial_ep_idx = ep_idx
     # ── Main loop ─────────────────────────────────────────────────────────
     while ep_idx < total_episodes:
 
@@ -347,7 +348,8 @@ def main(args):
     # ── Training curve plot ───────────────────────────────────────────────
     if episode_rewards:
         fig, ax = plt.subplots(figsize=(14, 5))
-        ax.plot(episode_rewards, alpha=0.3, color="#4C9BE8", label="Episode Reward")
+        x_episodes = np.arange(initial_ep_idx, initial_ep_idx + len(episode_rewards))
+        ax.plot(x_episodes, episode_rewards, alpha=0.3, color="#4C9BE8", label="Episode Reward")
 
         # Smoothed moving average
         window = min(500, len(episode_rewards) // 5 or 1)
@@ -355,12 +357,13 @@ def main(args):
             kernel = np.ones(window) / window
             smooth = np.convolve(episode_rewards, kernel, mode="valid")
             ax.plot(
-                range(window - 1, len(episode_rewards)),
+                x_episodes[window - 1:],
                 smooth,
                 linewidth=2.0,
                 color="#E84C4C",
                 label=f"MA-{window}",
             )
+
 
         ax.set_xlabel("Episode")
         ax.set_ylabel("Cumulative Episode Reward")
