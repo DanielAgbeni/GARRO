@@ -13,7 +13,14 @@ import argparse
 import os
 import re
 import time
+import sys
 from pathlib import Path
+
+# Ensure project root is in sys.path when executed from any directory
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from typing import Dict, List, Tuple
 
 import matplotlib
@@ -30,6 +37,7 @@ from model.ppo_agent import PPOAgent
 from topologies.fat_tree import get_fat_tree
 from topologies.geant2 import get_geant2
 from topologies.nsfnet import get_nsfnet
+
 
 TOPOLOGY_MAP = {
     "nsfnet": get_nsfnet,
