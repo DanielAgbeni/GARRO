@@ -124,10 +124,11 @@ def _run_baseline_worker(args_tuple) -> dict:
 
     for ep in tqdm(range(episodes), desc=desc, position=0, leave=True,
                    dynamic_ncols=True):
-        obs, _ = env.reset()
+        obs, _ = env.reset(seed=ep + seed)
         done   = False
         ep_r   = 0.0
         step   = 0
+
 
         while not done:
             n_paths = max(len(env.candidate_paths), 1)
@@ -171,11 +172,12 @@ def run_garro(
     agent.encoder.eval()
     agent.ac_net.eval()
 
-    for _ in tqdm(range(episodes), desc="GARRO   ", dynamic_ncols=True,
+    for ep in tqdm(range(episodes), desc="GARRO   ", dynamic_ncols=True,
                   position=0, leave=True):
-        obs, _ = env.reset()
+        obs, _ = env.reset(seed=ep + 42)
         done   = False
         ep_r   = 0.0
+
         while not done:
             action, _, _ = agent.select_action(
                 env.G, env.candidate_paths, deterministic=deterministic

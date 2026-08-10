@@ -56,8 +56,8 @@ RESET = "\033[0m"
 
 def eval_agent(agent: PPOAgent, env: MM1KNetworkEnv, n_episodes: int, deterministic: bool = True) -> float:
     rewards = []
-    for _ in range(n_episodes):
-        obs, info = env.reset()
+    for ep in range(n_episodes):
+        obs, info = env.reset(seed=ep + 42)
         done = False
         ep_r = 0.0
         while not done:
@@ -73,7 +73,7 @@ def eval_agent(agent: PPOAgent, env: MM1KNetworkEnv, n_episodes: int, determinis
 def eval_baseline(algo: str, env: MM1KNetworkEnv, n_episodes: int) -> float:
     rewards = []
     for ep in range(n_episodes):
-        obs, info = env.reset()
+        obs, info = env.reset(seed=ep + 42)
         done = False
         ep_r = 0.0
         step = 0
@@ -96,6 +96,7 @@ def eval_baseline(algo: str, env: MM1KNetworkEnv, n_episodes: int) -> float:
             step += 1
         rewards.append(ep_r)
     return float(np.mean(rewards))
+
 
 
 def main():
