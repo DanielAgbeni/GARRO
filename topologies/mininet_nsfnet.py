@@ -28,6 +28,7 @@ def build_nsfnet():
         link=TCLink,
         host=NamespacedHost,
         autoSetMacs=True,
+        autoStaticArp=True,
     )
 
     # Remote controller (OS-Ken)
@@ -82,6 +83,7 @@ def build_nsfnet():
         )
 
     net.start()
+    net.staticArp()
 
     # Ensure OpenFlow 1.3 on all switches
     for sw in switches:

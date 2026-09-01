@@ -13,33 +13,36 @@ Run with:
     python3 /usr/bin/osken-manager controller/garro_controller.py \
         --observe-links
 """
+import os
+os.environ["EVENTLET_HUB"] = "asyncio"
+
+import eventlet
+import eventlet.hubs
+try:
+    eventlet.hubs.use_hub("eventlet.hubs.asyncio")
+except Exception:
+    pass
+
+import eventlet.wsgi
+from flask import Flask, jsonify, request, render_template
+
 from os_ken.base import app_manager
 from os_ken.controller import ofp_event
 from os_ken.controller.handler import (
     CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 )
 from os_ken.ofproto import ofproto_v1_3
-from os_ken.lib.packet import packet, ethernet, ipv4, ether_types
+from os_ken.lib.packet import packet, ethernet, ipv4, arp, ether_types
 from os_ken.topology import event as topo_event
 from os_ken.topology.api import get_switch, get_link
 from os_ken.lib import hub
 
 import json
 import time
-import os
+import re
+import subprocess
 import networkx as nx
 from collections import defaultdict
-
-# Apply the recommended eventlet migration fix: switch to the asyncio hub
-import os
-os.environ["EVENTLET_HUB"] = "asyncio"
-
-import eventlet
-import eventlet.hubs
-eventlet.hubs.use_hub("eventlet.hubs.asyncio")
-
-import eventlet.wsgi
-from flask import Flask, jsonify, request, render_template
 
 # Find template folder next to this controller file
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -271,17 +274,22 @@ def run_speedtest():
             loss_m = re.search(r"(\d+)% packet loss", raw)
             pkt_m  = re.search(r"(\d+) packets transmitted, (\d+) received", raw)
 
-            if rtt_m:
+            if rtt_m or loss_m or pkt_m:
+                loss_pct = int(loss_m.group(1)) if loss_m else (100 if "Unreachable" in raw or "100%" in raw else None)
+                rx_count = int(pkt_m.group(2)) if pkt_m else 0
+                tx_count = int(pkt_m.group(1)) if pkt_m else 10
                 result["ping"] = {
-                    "rtt_min_ms":      float(rtt_m.group(1)),
-                    "rtt_avg_ms":      float(rtt_m.group(2)),
-                    "rtt_max_ms":      float(rtt_m.group(3)),
-                    "rtt_mdev_ms":     float(rtt_m.group(4)),
-                    "packet_loss_pct": int(loss_m.group(1)) if loss_m else None,
-                    "tx": int(pkt_m.group(1)) if pkt_m else None,
-                    "rx": int(pkt_m.group(2)) if pkt_m else None,
+                    "rtt_min_ms":      float(rtt_m.group(1)) if rtt_m else None,
+                    "rtt_avg_ms":      float(rtt_m.group(2)) if rtt_m else None,
+                    "rtt_max_ms":      float(rtt_m.group(3)) if rtt_m else None,
+                    "rtt_mdev_ms":     float(rtt_m.group(4)) if rtt_m else None,
+                    "packet_loss_pct": loss_pct,
+                    "tx": tx_count,
+                    "rx": rx_count,
                     "raw": raw.strip()
                 }
+                if loss_pct == 100 or rx_count == 0:
+                    result["errors"].append(f"Destination {dst_ip} unreachable (100% packet loss)")
             else:
                 result["errors"].append(f"ping parse failed: {raw.strip()[:300]}")
         except subprocess.TimeoutExpired:
@@ -544,6 +552,46 @@ class GARROController(app_manager.OSKenApp):
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return   # Let topology module handle LLDP
 
+        # ── ARP Proxy: Intercept ARP Requests directly ──
+        if eth.ethertype == ether_types.ETH_TYPE_ARP:
+            arp_pkt = pkt.get_protocol(arp.arp)
+            if arp_pkt and arp_pkt.opcode == arp.ARP_REQUEST:
+                target_ip = arp_pkt.dst_ip
+                target_mac = None
+                try:
+                    parts = target_ip.split(".")
+                    if len(parts) == 4 and parts[0] == "10" and parts[1] == "0" and parts[2] == "0":
+                        target_id = int(parts[3])
+                        target_mac = f"00:00:00:00:00:{target_id:02x}"
+                except Exception:
+                    pass
+
+                if target_mac:
+                    reply_pkt = packet.Packet()
+                    reply_pkt.add_protocol(ethernet.ethernet(
+                        ethertype=ether_types.ETH_TYPE_ARP,
+                        dst=eth.src,
+                        src=target_mac,
+                    ))
+                    reply_pkt.add_protocol(arp.arp(
+                        opcode=arp.ARP_REPLY,
+                        src_mac=target_mac,
+                        src_ip=target_ip,
+                        dst_mac=eth.src,
+                        dst_ip=arp_pkt.src_ip,
+                    ))
+                    reply_pkt.serialize()
+                    actions = [parser.OFPActionOutput(in_port)]
+                    out = parser.OFPPacketOut(
+                        datapath=dp,
+                        buffer_id=ofp.OFP_NO_BUFFER,
+                        in_port=ofp.OFPP_CONTROLLER,
+                        actions=actions,
+                        data=reply_pkt.data,
+                    )
+                    dp.send_msg(out)
+                    return
+
         dst = eth.dst
         src = eth.src
 
@@ -734,6 +782,11 @@ class GARROController(app_manager.OSKenApp):
                     )
                     actions = [parser.OFPActionOutput(1)]  # host port
                     self._add_flow(dp, 10, match_ip, actions)
+                    # ARP-based rule (for host delivery)
+                    match_arp = parser.OFPMatch(
+                        eth_type=0x0806, arp_tpa=dst_ip
+                    )
+                    self._add_flow(dp, 10, match_arp, actions)
                     # MAC-based rule (for ARP replies)
                     match_mac = parser.OFPMatch(eth_dst=dst_mac)
                     self._add_flow(dp, 10, match_mac, actions)
@@ -773,6 +826,12 @@ class GARROController(app_manager.OSKenApp):
                         eth_type=0x0800, ipv4_dst=dst_ip
                     )
                     self._add_flow(dp, 10, match_ip, actions)
+
+                    # ARP-based forwarding (directed ARP)
+                    match_arp = parser.OFPMatch(
+                        eth_type=0x0806, arp_tpa=dst_ip
+                    )
+                    self._add_flow(dp, 10, match_arp, actions)
 
                     # MAC-based forwarding (ARP replies)
                     match_mac = parser.OFPMatch(eth_dst=dst_mac)
@@ -819,13 +878,14 @@ class GARROController(app_manager.OSKenApp):
     def install_path_flow(self, path: list, src_ip: str, dst_ip: str,
                           priority: int = 100, is_fallback: bool = False):
         """
-        Install flow rules along a computed path.
+        Install bidirectional flow rules along a computed path.
         path: list of dpid values [dpid1, dpid2, ..., dpidN]
         """
         if len(path) < 2:
             self.logger.warning("[GARRO] Path too short to install flows")
             return
 
+        # Forward flow: src_ip -> dst_ip along path
         for i in range(len(path) - 1):
             current_dpid = path[i]
             next_dpid = path[i + 1]
@@ -849,13 +909,38 @@ class GARROController(app_manager.OSKenApp):
             self._add_flow(dp, priority, match, actions,
                            idle_timeout=60, hard_timeout=120)
 
+        # Reverse flow: dst_ip -> src_ip along reversed path
+        rev_path = list(reversed(path))
+        for i in range(len(rev_path) - 1):
+            current_dpid = rev_path[i]
+            next_dpid = rev_path[i + 1]
+            dp = self.datapaths.get(current_dpid)
+            if dp is None:
+                continue
+
+            edge_data = self.topology.edges.get((current_dpid, next_dpid))
+            if edge_data is None:
+                continue
+
+            out_port = edge_data["src_port"]
+            parser = dp.ofproto_parser
+
+            match = parser.OFPMatch(
+                eth_type=0x0800,
+                ipv4_src=dst_ip,
+                ipv4_dst=src_ip,
+            )
+            actions = [parser.OFPActionOutput(out_port)]
+            self._add_flow(dp, priority, match, actions,
+                           idle_timeout=60, hard_timeout=120)
+
         # Track this path as active and record fallback status
         flow_key = f"{src_ip}->{dst_ip}"
         self.active_paths[flow_key] = path
         self.fallback_paths[flow_key] = is_fallback
 
         self.logger.info(
-            f"[GARRO] Installed path ({'Fast-Path Dijkstra' if is_fallback else 'PPO AI'}): {path} for {src_ip} → {dst_ip}"
+            f"[GARRO] Installed bidirectional path ({'Fast-Path Dijkstra' if is_fallback else 'PPO AI'}): {path} for {src_ip} ↔ {dst_ip}"
         )
 
     # ── REST API Data Builder ──────────────────────────────────────────────

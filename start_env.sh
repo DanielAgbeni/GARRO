@@ -22,11 +22,14 @@ sudo mn -c 2>/dev/null || true
 echo "[3/4] Ensuring loopback is up..."
 sudo ip link set lo up 2>/dev/null || true
 
+export EVENTLET_HUB=asyncio
+
 # 4. Print instructions
 echo "[4/4] Ready."
 echo ""
 echo "======================================================"
 echo "  Terminal A — start controller:"
+echo "    export EVENTLET_HUB=asyncio"
 echo "    python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links"
 echo "    (or: osken-manager controller/garro_controller.py --observe-links)"
 echo ""
