@@ -1566,8 +1566,7 @@
         let currentTopologyLabel = null;
         // Fallback sizing heuristic if the backend doesn't send a `topology`
         // field directly — classic NSFNET has 14 nodes, GEANT2 is typically
-        // modeled with 40. Adjust these if your emulator's node counts differ.
-        const topoSizeMap = { 14: 'NSFNET2', 40: 'GEANT2' };
+        const topoSizeMap = { 14: 'NSFNET2', 20: 'FAT-TREE', 24: 'GEANT2', 40: 'GEANT2' };
 
         // Theme management
         const html = document.documentElement;
@@ -1864,6 +1863,7 @@
             if (state.topology) {
                 const key = String(state.topology).toLowerCase();
                 if (key.includes('nsfnet')) return 'NSFNET2';
+                if (key.includes('fat')) return 'FAT-TREE';
                 if (key.includes('geant')) return 'GEANT2';
                 return String(state.topology).toUpperCase();
             }
@@ -1909,7 +1909,7 @@
                 if (state.nodes && state.edges && state.edges.length > knownEdgeCount) {
                     document.getElementById('empty-map-text').style.display = 'none';
                     setTopologyLabel(resolveTopologyLabel(state), true);
-                    buildInitialTopology(state.nodes, state.edges);
+                    buildInitialTopology(state.nodes, state.edges, state.hosts);
                     knownEdgeCount = state.edges.length;
                     setTimeout(() => setTopologyLabel(resolveTopologyLabel(state), false), 400);
                 } else {
@@ -1932,30 +1932,61 @@
             document.getElementById(`fill-${id}`).style.width = `${pct}%`;
         }
 
-        function buildInitialTopology(nodes, edges) {
+        function buildInitialTopology(nodes, edges, hosts) {
             nodesDataset.clear();
             edgesDataset.clear();
 
-            // Build a dpid → city label lookup from backend data
-            const cityLabels = {};
-            nodes.forEach(n => { if (n.label) cityLabels[n.dpid] = n.label; });
+            // Build a dpid → label lookup from backend data
+            const switchLabels = {};
+            nodes.forEach(n => { if (n.label) switchLabels[n.dpid] = n.label; });
 
+            // 1. Add switch nodes
             nodes.forEach(n => {
                 const dpid = n.dpid;
-                const city = cityLabels[dpid];
+                const city = switchLabels[dpid];
                 const swLabel = city ? `SW ${dpid}\n${city}` : `SW ${dpid}`;
                 nodesDataset.add({
                     id: `s_${dpid}`, label: swLabel, shape: 'box',
                     color: { background: COLOR_NODE, border: COLOR_NODE_BORDER },
                     font: { color: COLOR_TEXT, size: 11, face: 'Inter', multi: 'md' }
                 });
-                nodesDataset.add({
-                    id: `h_${dpid}`, label: `H${dpid}`, shape: 'box',
-                    color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
-                    font: { color: COLOR_TEXT, size: 11, face: 'Inter' }
-                });
-                edgesDataset.add({ id: `link_h_${dpid}_s_${dpid}`, from: `h_${dpid}`, to: `s_${dpid}`, color: { color: COLOR_LINK_INACTIVE }, dashes: true });
             });
+
+            // 2. Add host nodes connected to their respective switches
+            if (hosts && hosts.length) {
+                hosts.forEach(h => {
+                    const hostNum = String(h.name).replace('h', '');
+                    nodesDataset.add({
+                        id: `h_${hostNum}`, label: `H${hostNum}`, shape: 'box',
+                        color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
+                        font: { color: COLOR_TEXT, size: 11, face: 'Inter' }
+                    });
+                    edgesDataset.add({
+                        id: `link_h_${hostNum}_s_${h.dpid}`,
+                        from: `h_${hostNum}`,
+                        to: `s_${h.dpid}`,
+                        color: { color: COLOR_LINK_INACTIVE },
+                        dashes: true
+                    });
+                });
+            } else {
+                // Fallback: 1 host per switch
+                nodes.forEach(n => {
+                    const dpid = n.dpid;
+                    nodesDataset.add({
+                        id: `h_${dpid}`, label: `H${dpid}`, shape: 'box',
+                        color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
+                        font: { color: COLOR_TEXT, size: 11, face: 'Inter' }
+                    });
+                    edgesDataset.add({
+                        id: `link_h_${dpid}_s_${dpid}`,
+                        from: `h_${dpid}`,
+                        to: `s_${dpid}`,
+                        color: { color: COLOR_LINK_INACTIVE },
+                        dashes: true
+                    });
+                });
+            }
 
             // Build an edge metadata lookup (keyed both ways for undirected matching)
             const edgeMeta = {};
@@ -2190,10 +2221,10 @@
             }
 
             // Host links to src/dst: make them pop
-            [`link_h_${srcHost.replace('h','')}_s_${srcHost.replace('h','')}`,
-             `link_h_${dstHost.replace('h','')}_s_${dstHost.replace('h','')}`].forEach(eid => {
-                const e = edgesDataset.get(eid);
-                if (e) edgesDataset.update({ id: eid, color: { color: running ? '#38bdf8' : 'rgba(56,189,248,0.6)' }, dashes: false, width: 2 });
+            edgesDataset.forEach(e => {
+                if (e.id.startsWith(`link_h_${srcNum}_`) || e.id.startsWith(`link_h_${dstNum}_`)) {
+                    edgesDataset.update({ id: e.id, color: { color: running ? '#38bdf8' : 'rgba(56,189,248,0.6)' }, dashes: false, width: 2 });
+                }
             });
         }
 

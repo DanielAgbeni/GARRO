@@ -308,11 +308,27 @@ async def main(args):
     llm = LLMOrchestrator(config)
 
     # ── Flow demands to route ─────────────────────────────────────────────
-    flow_demands = [
-        ("10.0.0.1",  "10.0.0.14", 0,  13),
-        ("10.0.0.3",  "10.0.0.12", 2,  11),
-        ("10.0.0.5",  "10.0.0.9",  4,  8),
-    ]
+    if args.topology == "fat_tree":
+        # Fat-Tree k=4: edge switches are nodes 12..19 (dpids 13..20).
+        # h1 & h2 on s13 (node 12), h3 & h4 on s14 (node 13), h5 & h6 on s15 (node 14)
+        # h9 & h10 on s17 (node 16), h11 & h12 on s18 (node 17), h13 & h14 on s19 (node 18)
+        flow_demands = [
+            ("10.0.0.1",  "10.0.0.14", 12, 18),
+            ("10.0.0.3",  "10.0.0.12", 13, 17),
+            ("10.0.0.5",  "10.0.0.9",  14, 16),
+        ]
+    elif args.topology == "geant2":
+        flow_demands = [
+            ("10.0.0.1",  "10.0.0.24", 0, 23),
+            ("10.0.0.3",  "10.0.0.18", 2, 17),
+            ("10.0.0.5",  "10.0.0.15", 4, 14),
+        ]
+    else:  # nsfnet (default)
+        flow_demands = [
+            ("10.0.0.1",  "10.0.0.14", 0, 13),
+            ("10.0.0.3",  "10.0.0.12", 2, 11),
+            ("10.0.0.5",  "10.0.0.9",  4,  8),
+        ]
 
     polling_interval = config["network"]["polling_interval"]
     print(f"\n[Deploy] GARRO online — polling every {polling_interval}s")
