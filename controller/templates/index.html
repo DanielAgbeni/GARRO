@@ -1936,6 +1936,35 @@
             nodesDataset.clear();
             edgesDataset.clear();
 
+            const isFatTree = nodes.length === 20;
+            const fatTreePositions = {
+                // Core Switches (s1 - s4)
+                1: { x: -300, y: -220 },
+                2: { x: -100, y: -220 },
+                3: { x: 100, y: -220 },
+                4: { x: 300, y: -220 },
+                // Aggregation Switches (s5 - s12) across 4 pods
+                5: { x: -520, y: -70 }, 6: { x: -380, y: -70 },
+                7: { x: -190, y: -70 }, 8: { x: -50, y: -70 },
+                9: { x: 90, y: -70 },   10: { x: 230, y: -70 },
+                11: { x: 370, y: -70 }, 12: { x: 510, y: -70 },
+                // Edge / Top-of-Rack Switches (s13 - s20)
+                13: { x: -520, y: 80 }, 14: { x: -380, y: 80 },
+                15: { x: -190, y: 80 }, 16: { x: -50, y: 80 },
+                17: { x: 90, y: 80 },   18: { x: 230, y: 80 },
+                19: { x: 370, y: 80 },  20: { x: 510, y: 80 },
+            };
+            const fatTreeHostPositions = {
+                1: { x: -560, y: 220 }, 2: { x: -480, y: 220 },
+                3: { x: -420, y: 220 }, 4: { x: -340, y: 220 },
+                5: { x: -230, y: 220 }, 6: { x: -150, y: 220 },
+                7: { x: -90, y: 220 },  8: { x: -10, y: 220 },
+                9: { x: 50, y: 220 },   10: { x: 130, y: 220 },
+                11: { x: 190, y: 220 }, 12: { x: 270, y: 220 },
+                13: { x: 330, y: 220 }, 14: { x: 410, y: 220 },
+                15: { x: 470, y: 220 }, 16: { x: 550, y: 220 },
+            };
+
             // Build a dpid → label lookup from backend data
             const switchLabels = {};
             nodes.forEach(n => { if (n.label) switchLabels[n.dpid] = n.label; });
@@ -1945,22 +1974,34 @@
                 const dpid = n.dpid;
                 const city = switchLabels[dpid];
                 const swLabel = city ? `SW ${dpid}\n${city}` : `SW ${dpid}`;
-                nodesDataset.add({
+                const nodeDef = {
                     id: `s_${dpid}`, label: swLabel, shape: 'box',
                     color: { background: COLOR_NODE, border: COLOR_NODE_BORDER },
                     font: { color: COLOR_TEXT, size: 11, face: 'Inter', multi: 'md' }
-                });
+                };
+                if (isFatTree && fatTreePositions[dpid]) {
+                    nodeDef.x = fatTreePositions[dpid].x;
+                    nodeDef.y = fatTreePositions[dpid].y;
+                    nodeDef.fixed = { x: true, y: true };
+                }
+                nodesDataset.add(nodeDef);
             });
 
             // 2. Add host nodes connected to their respective switches
             if (hosts && hosts.length) {
                 hosts.forEach(h => {
                     const hostNum = String(h.name).replace('h', '');
-                    nodesDataset.add({
+                    const hostDef = {
                         id: `h_${hostNum}`, label: `H${hostNum}`, shape: 'box',
                         color: { background: COLOR_HOST, border: COLOR_NODE_BORDER },
                         font: { color: COLOR_TEXT, size: 11, face: 'Inter' }
-                    });
+                    };
+                    if (isFatTree && fatTreeHostPositions[hostNum]) {
+                        hostDef.x = fatTreeHostPositions[hostNum].x;
+                        hostDef.y = fatTreeHostPositions[hostNum].y;
+                        hostDef.fixed = { x: true, y: true };
+                    }
+                    nodesDataset.add(hostDef);
                     edgesDataset.add({
                         id: `link_h_${hostNum}_s_${h.dpid}`,
                         from: `h_${hostNum}`,
