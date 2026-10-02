@@ -198,7 +198,7 @@ def run_garro(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args):
-    with open("config.yaml") as f:
+    with open("config.yaml", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     if args.arrival_rate is not None:

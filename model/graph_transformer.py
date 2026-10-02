@@ -214,7 +214,11 @@ class GraphTransformerEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-    def forward(self, data: Data) -> torch.Tensor:
+    def forward(
+        self,
+        data: Data,
+        return_node_feats: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         x = self.node_embed(data.x)                    # [B*nodes, H]
 
         hop_dist = getattr(data, "hop_dist", None)
@@ -232,7 +236,235 @@ class GraphTransformerEncoder(nn.Module):
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
         latent = global_mean_pool(x, batch)
-        return self.output_mlp(latent)                 # [B, hidden_dim]
+        z_global = self.output_mlp(latent)             # [B, hidden_dim]
+        if return_node_feats:
+            return z_global, x
+        return z_global
+
+
+# ── Path-Centric Actor-Critic Network (RouteNet-Fermi Paradigm) ──────────────
+
+class PathAttentionActorCritic(nn.Module):
+    """
+    Path-Centric Actor-Critic Network (RouteNet-Fermi paradigm).
+
+    Directly evaluates candidate routing paths by pooling bottleneck and mean
+    link states along each path, scoring paths via cross-attention with the
+    flow demand representation.
+    """
+    def __init__(
+        self,
+        latent_dim: int = 256,
+        k_paths: int = 5,
+        hidden_dim: int = 256,
+        edge_attr_dim: int = 4,
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.k_paths = k_paths
+        self.hidden_dim = hidden_dim
+
+        # ── 1. Edge State Projector: [x_u, x_v, edge_attr] -> h_edge ───────
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(latent_dim * 2 + edge_attr_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+
+        # ── 2. Path Bottleneck & Mean Aggregator ───────────────────────────
+        # Combines [mean_pool, max_bottleneck_pool] along constituent edges
+        self.path_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        # ── 3. Flow Demand Projector: [x_src, x_dst, z_global] -> h_flow ───
+        self.flow_mlp = nn.Sequential(
+            nn.Linear(latent_dim * 3, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        # ── 4. Cross-Attention Path Scorer (Actor Head) ───────────────────
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.key_proj   = nn.Linear(hidden_dim, hidden_dim)
+        self.score_mlp  = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + latent_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+
+        # ── 5. Value Function (Critic Head) ───────────────────────────────
+        self.critic_head = nn.Sequential(
+            nn.Linear(latent_dim + hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        # ── 6. Fallback MLP for backward compatibility ────────────────────
+        self.shared = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.actor_head  = nn.Linear(hidden_dim, k_paths)
+
+    def forward(
+        self,
+        z_global: torch.Tensor,
+        node_feats: Optional[torch.Tensor] = None,
+        edge_index: Optional[torch.Tensor] = None,
+        edge_attr: Optional[torch.Tensor] = None,
+        path_edges: Optional[List[List[List[int]]]] = None,
+        src_dst: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass for Path-Attention Actor-Critic.
+
+        Parameters
+        ----------
+        z_global   : [B, latent_dim] Global pooled graph representation.
+        node_feats : [B * (N+1), latent_dim] Node embeddings from GraphTransformer.
+        edge_index : [2, E_batch] Directed edge connections.
+        edge_attr  : [E_batch, 4] Dynamic edge telemetry attributes.
+        path_edges : List over batch of K paths, each path being a list of edge indices.
+        src_dst    : [B, 2] Tensor of (src_node_idx, dst_node_idx) per batch item.
+
+        Returns
+        -------
+        logits : [B, K] Path routing action logits.
+        value  : [B] Critic state value estimate.
+        """
+        B = z_global.size(0)
+
+        # Fallback to standard global MLP if path inputs not provided
+        if path_edges is None or node_feats is None or edge_index is None or edge_attr is None:
+            shared = self.shared(z_global)
+            logits = self.actor_head(shared)
+            value = self.critic_head(torch.cat([z_global, shared], dim=-1)).squeeze(-1)
+            return logits, value
+
+        device = z_global.device
+
+        # Reshape / unsqueeze node_feats to [B, N, hidden_dim]
+        if node_feats.dim() == 2:
+            if B == 1:
+                node_feats = node_feats.unsqueeze(0)
+            else:
+                N = node_feats.size(0) // B
+                node_feats = node_feats.view(B, N, -1)
+
+        # Reshape / unsqueeze edge_attr to [B, E, 4]
+        if edge_attr.dim() == 2:
+            if B == 1:
+                edge_attr = edge_attr.unsqueeze(0)
+            else:
+                E = edge_index.size(1)
+                if edge_attr.size(0) == B * E:
+                    edge_attr = edge_attr.view(B, E, -1)
+                elif edge_attr.size(0) == E:
+                    edge_attr = edge_attr.unsqueeze(0).expand(B, -1, -1)
+
+        # 1. Compute contextual edge representations: [B, E, hidden_dim]
+        u_nodes = edge_index[0]
+        v_nodes = edge_index[1]
+        x_u = node_feats[:, u_nodes, :]
+        x_v = node_feats[:, v_nodes, :]
+        edge_raw = torch.cat([x_u, x_v, edge_attr], dim=-1)
+        h_edge = self.edge_mlp(edge_raw)
+
+        # 2. Compute flow demand representation: [B, hidden_dim]
+        if src_dst is not None and src_dst.size(0) == B:
+            src_idx = src_dst[:, 0]
+            dst_idx = src_dst[:, 1]
+            b_indices = torch.arange(B, device=device)
+            x_src = node_feats[b_indices, src_idx]
+            x_dst = node_feats[b_indices, dst_idx]
+        else:
+            x_src = z_global
+            x_dst = z_global
+
+        flow_raw = torch.cat([x_src, x_dst, z_global], dim=-1)
+        h_flow = self.flow_mlp(flow_raw)   # [B, hidden_dim]
+
+        # 3. Embed each candidate path via mean and bottleneck pooling
+        logits_list = []
+        q_flow = self.query_proj(h_flow)   # [B, hidden_dim]
+
+        for b in range(B):
+            b_paths  = path_edges[b] if b < len(path_edges) else []
+            b_h_flow = h_flow[b]            # [hidden_dim]
+            b_q_flow = q_flow[b]            # [hidden_dim]
+            b_z_glob = z_global[b]          # [latent_dim]
+
+            path_scores = []
+            for k in range(self.k_paths):
+                if k < len(b_paths) and len(b_paths[k]) > 0:
+                    e_indices = torch.tensor(b_paths[k], dtype=torch.long, device=device)
+                    p_edge_embeds = h_edge[b, e_indices]   # [hops, hidden_dim]
+
+                    mean_pool = p_edge_embeds.mean(dim=0)
+                    bottleneck_pool, _ = p_edge_embeds.max(dim=0)
+                    path_rep = self.path_mlp(torch.cat([mean_pool, bottleneck_pool], dim=-1))
+
+                    k_path = self.key_proj(path_rep)
+                    dot_score = (b_q_flow * k_path).sum() / (self.hidden_dim ** 0.5)
+
+                    score_in = torch.cat([b_h_flow, path_rep, b_z_glob], dim=-1)
+                    mlp_score = self.score_mlp(score_in).squeeze(-1)
+                    path_scores.append(dot_score + mlp_score)
+                else:
+                    path_scores.append(torch.tensor(-1e4, device=device, dtype=z_global.dtype))
+
+            logits_list.append(torch.stack(path_scores))
+
+        logits = torch.stack(logits_list, dim=0)   # [B, K]
+
+        # 4. Critic value estimation
+        critic_in = torch.cat([z_global, h_flow], dim=-1)
+        value = self.critic_head(critic_in).squeeze(-1)   # [B]
+
+        return logits, value
+
+    def get_action(
+        self,
+        latent: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        deterministic: bool = False,
+        node_feats: Optional[torch.Tensor] = None,
+        edge_index: Optional[torch.Tensor] = None,
+        edge_attr: Optional[torch.Tensor] = None,
+        path_edges: Optional[List[List[List[int]]]] = None,
+        src_dst: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample or greedily select an action from the policy."""
+        logits, value = self.forward(
+            z_global=latent,
+            node_feats=node_feats,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            path_edges=path_edges,
+            src_dst=src_dst,
+        )
+
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
+        logits = torch.clamp(logits, -10.0, 10.0)
+        if mask is not None and bool(mask.any().item()):
+            fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
+            logits = logits.masked_fill(~mask, fill_val)
+
+        from torch.distributions import Categorical
+        dist = Categorical(logits=logits)
+        if deterministic:
+            action = logits.argmax(dim=-1)
+        else:
+            action = dist.sample()
+
+        log_prob = dist.log_prob(action)
+        return action, log_prob, value
 
 
 # ── GraphConverter ─────────────────────────────────────────────────────────────

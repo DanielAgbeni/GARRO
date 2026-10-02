@@ -8,6 +8,30 @@ mm1k:
   base_arrival_rate: 100.0        # λ base (packets/sec)
   base_service_rate: 150.0        # μ base (packets/sec)
 
+datacenter_traffic:
+  enabled: false                    # Automatically active for fat_tree; set true to force on other topologies
+  pattern: "mixed"                  # mixed | staggered | stride | incast | allreduce
+  p_edge: 0.20                      # Edge locality (intra-rack)
+  p_pod: 0.30                       # Pod locality (intra-pod)
+  p_core: 0.50                      # Core bisection (inter-pod)
+  stride: null                      # Stride offset (null defaults to N_edge // 2 for maximum bisection stress)
+  elephant_prob: 0.15               # Probability of elephant flow per communicating pair
+  elephant_alpha: 1.15              # Pareto shape parameter α
+  elephant_scale: 8.0               # Multiplier for elephant flow demand
+  mice_cov: 0.25                    # Lognormal noise parameter for mice flows
+  incast_prob: 0.08                 # Probability of synchronized incast burst
+  incast_senders: 6                 # Number of concurrent incast sender edge switches
+  incast_scale: 5.0                 # Traffic multiplier during incast burst
+  allreduce_interval: 120           # Steps between distributed ML all-reduce bursts
+  allreduce_scale: 3.0              # Traffic multiplier during all-reduce
+  tod_amplitude_day: 0.35           # Daytime interactive sine amplitude
+  tod_peak_hour_day: 15.0           # Daytime peak hour (3:00 PM)
+  tod_amplitude_batch: 0.45         # Nighttime batch Gaussian amplitude
+  tod_peak_hour_batch: 3.0          # Nighttime batch peak hour (3:00 AM)
+  tod_sigma_batch: 1.8              # Nighttime batch Gaussian standard deviation (hours)
+  steps_per_hour: 60.0              # Steps per simulated hour
+  ar_coeff: 0.88                    # AR(1) temporal persistence coefficient
+
 graph_transformer:
   hidden_dim: 256                 # Latent embedding dimension (increased 128→256 for more capacity)
   num_heads: 8                    # Multi-head attention heads (increased 4→8; 256/8=32 per head)
@@ -22,7 +46,7 @@ ppo:
   clip_epsilon: 0.1               # PPO clipping ε (tightened 0.2→0.1; prevents destructive large policy steps)
   update_epochs: 5                # PPO update epochs (reduced 10→5 to match tighter clip_epsilon)
   batch_size: 256                 # Mini-batch size (increased 64→256 for more stable gradient estimates)
-  entropy_coef: 0.03              # Entropy bonus (increased 0.01→0.03; forces exploration from plateau)
+  entropy_coef: 0.01              # Entropy bonus (PPO standard; modest exploration without destabilising updates)
   target_kl: 0.02                 # Target KL divergence early stopping threshold (prevents catastrophic policy collapse)
 
 training:
@@ -49,7 +73,7 @@ topology_overrides:
     # GEANT2 (24 nodes, 37 links) — larger topology needs more exploration
     # and a slower decay horizon to match its higher episode count.
     ppo:
-      entropy_coef: 0.05          # Higher than NSFNET (0.03) — forces exploration on larger action space
+      entropy_coef: 0.02          # Slightly higher than NSFNET default for larger action space
       gae_lambda: 0.99            # Longer credit assignment; GEANT2 avg path = 2.99 hops
       clip_epsilon: 0.15          # Slightly relaxed from 0.1 — allows larger policy steps during early exploration
     training:
@@ -59,7 +83,7 @@ topology_overrides:
     # Fat-Tree k=4 (20 switches, 16 hosts) — hierarchical Data Center Network (DCN)
     # Uses higher hop and congestion penalties to optimize equal-cost multi-path (ECMP) routing.
     ppo:
-      entropy_coef: 0.04          # Moderate exploration bonus for regular 20-node structure
+      entropy_coef: 0.015         # Modest exploration bonus for regular 20-node DCN structure
       gae_lambda: 0.98            # Multi-hop credit assignment for 4-hop DCN paths
       clip_epsilon: 0.1           # Tight clipping prevents policy instability
     reward_weights:

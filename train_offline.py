@@ -109,7 +109,7 @@ def _print_hardware_banner(
 
 def main(args):
     # ── Load configuration ────────────────────────────────────────────────
-    with open("config.yaml") as f:
+    with open("config.yaml", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     config["network"]["topology"] = args.topology
@@ -280,13 +280,15 @@ def main(args):
 
         # 3. Store transition — PyG Data object stored directly (no deepcopy)
         agent.buffer.add(
-            state    = state_snap,
-            action   = action,
-            log_prob = log_prob,
-            reward   = reward,
-            value    = value,
-            done     = done,
-            mask     = getattr(agent, "_last_mask", None),
+            state      = state_snap,
+            action     = action,
+            log_prob   = log_prob,
+            reward     = reward,
+            value      = value,
+            done       = done,
+            mask       = getattr(agent, "_last_mask", None),
+            path_edges = getattr(agent, "_last_path_edges", None),
+            src_dst    = getattr(agent, "_last_src_dst", None),
         )
 
         obs         = next_obs

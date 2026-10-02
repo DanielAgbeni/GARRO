@@ -66,7 +66,11 @@ from torch.distributions import Categorical
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch_geometric.data import Batch, Data
 
-from model.graph_transformer import GraphTransformerEncoder, nx_to_pyg
+from model.graph_transformer import (
+    GraphTransformerEncoder,
+    PathAttentionActorCritic,
+    nx_to_pyg,
+)
 
 
 # ── Hardware / Thread Configuration ──────────────────────────────────────────
@@ -158,74 +162,12 @@ def _compile_supported() -> bool:
 
 # ── Actor-Critic Network ──────────────────────────────────────────────────────
 
-class ActorCriticNetwork(nn.Module):
+class ActorCriticNetwork(PathAttentionActorCritic):
     """
-    Shared-trunk Actor-Critic network.
-
-    Parameters
-    ----------
-    latent_dim  : int  Dimension of the Graph Transformer latent vector.
-    k_paths     : int  Number of candidate paths (action-space size).
-    hidden_dim  : int  Hidden width of the shared trunk (default 256).
+    Path-Centric Actor-Critic Network (RouteNet-Fermi paradigm).
+    Subclasses PathAttentionActorCritic with full backward-compatibility.
     """
-
-    def __init__(self, latent_dim: int, k_paths: int, hidden_dim: int = 256):
-        super().__init__()
-
-        self.shared = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.actor_head  = nn.Linear(hidden_dim, k_paths)
-        self.critic_head = nn.Linear(hidden_dim, 1)
-
-    def forward(
-        self, latent: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        shared_out = self.shared(latent)
-        logits     = self.actor_head(shared_out)
-        value      = self.critic_head(shared_out).squeeze(-1)
-        return logits, value
-
-    def get_action(
-        self,
-        latent: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        deterministic: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Sample an action from the policy.
-
-        Parameters
-        ----------
-        latent : torch.Tensor   Shape [1, latent_dim]
-        mask   : torch.Tensor   Bool tensor [K]; True = valid path exists.
-
-        Returns
-        -------
-        action   : torch.Tensor   Scalar action index
-        log_prob : torch.Tensor   Log-probability of the sampled action
-        value    : torch.Tensor   Critic's state value estimate
-        """
-        logits, value = self.forward(latent)
-
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
-        logits = torch.clamp(logits, -20.0, 20.0)
-        if mask is not None and bool(mask.any().item()):
-            # Use -1e4 instead of -1e9: large enough to zero-out probabilities
-            # after softmax, but safely within float16 range (~65504 max).
-            fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
-            logits = logits.masked_fill(~mask, fill_val)
-
-        dist = Categorical(logits=logits)
-        if deterministic:
-            action = torch.argmax(logits, dim=-1)
-        else:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        return action, log_prob, value
+    pass
 
 
 # ── Rollout Buffer ────────────────────────────────────────────────────────────
@@ -248,13 +190,15 @@ class RolloutBuffer:
     """
 
     def __init__(self):
-        self.states:    List[Dict]         = []   # lightweight telemetry snapshots
-        self.actions:   List[int]          = []
-        self.log_probs: List[float]        = []
-        self.rewards:   List[float]        = []
-        self.values:    List[float]        = []
-        self.dones:     List[bool]         = []
-        self.masks:     List[torch.Tensor] = []
+        self.states:     List[Dict]         = []   # lightweight telemetry snapshots
+        self.actions:    List[int]          = []
+        self.log_probs:  List[float]        = []
+        self.rewards:    List[float]        = []
+        self.values:     List[float]        = []
+        self.dones:      List[bool]         = []
+        self.masks:      List[torch.Tensor] = []
+        self.path_edges: List               = []
+        self.src_dst:    List               = []
 
     @staticmethod
     def _snapshot(G: nx.Graph) -> Dict:
@@ -275,12 +219,14 @@ class RolloutBuffer:
     def add(
         self,
         state,
-        action:   int,
-        log_prob: float,
-        reward:   float,
-        value:    float,
-        done:     bool,
-        mask:     Optional[torch.Tensor] = None,
+        action:     int,
+        log_prob:   float,
+        reward:     float,
+        value:      float,
+        done:       bool,
+        mask:       Optional[torch.Tensor] = None,
+        path_edges: Optional[List] = None,
+        src_dst:    Optional[Tuple[int, int]] = None,
     ):
         if isinstance(state, nx.Graph):
             self.states.append(self._snapshot(state))
@@ -296,9 +242,19 @@ class RolloutBuffer:
         self.dones.append(done)
         if mask is not None:
             self.masks.append(mask.cpu())
+        self.path_edges.append(path_edges)
+        self.src_dst.append(src_dst)
 
     def clear(self):
-        self.__init__()
+        self.states.clear()
+        self.actions.clear()
+        self.log_probs.clear()
+        self.rewards.clear()
+        self.values.clear()
+        self.dones.clear()
+        self.masks.clear()
+        self.path_edges.clear()
+        self.src_dst.clear()
 
     def __len__(self) -> int:
         return len(self.actions)
@@ -362,12 +318,17 @@ class FastGraphConverter:
         self.edge_index = torch.zeros(
             (2, n_total_edges), dtype=torch.long, device=device
         )
+        self.edge_dir_map: Dict[Tuple[int, int], int] = {}
         curr = 0
         for u_idx, v_idx in zip(self._eu, self._ev):
             self.edge_index[0, curr]   = u_idx
             self.edge_index[1, curr]   = v_idx
             self.edge_index[0, curr+1] = v_idx
             self.edge_index[1, curr+1] = u_idx
+            u = self.nodes[u_idx]
+            v = self.nodes[v_idx]
+            self.edge_dir_map[(u, v)] = curr
+            self.edge_dir_map[(v, u)] = curr + 1
             curr += 2
 
         star_idx = self.n_real
@@ -478,6 +439,20 @@ class FastGraphConverter:
             edge_attr  = edge_attr_dev,
         )
 
+    def path_to_edge_indices(self, path: List[int]) -> List[int]:
+        """Convert a sequence of node IDs into edge indices in edge_index."""
+        if not path or len(path) < 2:
+            return []
+        return [
+            self.edge_dir_map[(u, v)]
+            for u, v in zip(path[:-1], path[1:])
+            if (u, v) in self.edge_dir_map
+        ]
+
+    def paths_to_edge_indices(self, paths: List[List[int]]) -> List[List[int]]:
+        """Convert candidate paths to edge index lists."""
+        return [self.path_to_edge_indices(p) for p in paths]
+
 
 # ── PPO Agent ─────────────────────────────────────────────────────────────────
 
@@ -508,8 +483,12 @@ class PPOAgent:
 
         self.config    = config
         self.k_paths   = k_paths
-        self.num_nodes = num_nodes
-        self.device    = device if device is not None else _best_device()
+        if isinstance(device, str):
+            self.device = torch.device(device)
+        elif device is not None:
+            self.device = device
+        else:
+            self.device = _best_device()
         self._total_episodes_override = total_episodes
 
         if self.device.type == "cuda":
@@ -601,10 +580,17 @@ class PPOAgent:
         self.opt_encoder = torch.optim.Adam(
             self.encoder.parameters(), lr=ppo_cfg["lr_actor"]
         )
+        actor_params = [
+            p for name, p in self.ac_net.named_parameters()
+            if not name.startswith("critic_")
+        ]
+        critic_params = [
+            p for name, p in self.ac_net.named_parameters()
+            if name.startswith("critic_")
+        ]
         self.opt_ac = torch.optim.Adam([
-            {"params": self.ac_net.actor_head.parameters(),  "lr": ppo_cfg["lr_actor"]},
-            {"params": self.ac_net.critic_head.parameters(), "lr": ppo_cfg["lr_critic"]},
-            {"params": self.ac_net.shared.parameters(),      "lr": ppo_cfg["lr_actor"]},
+            {"params": actor_params,  "lr": ppo_cfg["lr_actor"]},
+            {"params": critic_params, "lr": ppo_cfg["lr_critic"]},
         ])
 
         # ── Hyperparameters ───────────────────────────────────────────────
@@ -739,11 +725,31 @@ class PPOAgent:
         -------
         (action_idx, log_prob, value_estimate) — all Python scalars.
         """
-        latent = self._encode(graph)
+        conv = self._ensure_converter(graph)
+        pyg = conv.convert(graph)
+        pyg.batch = torch.zeros(
+            pyg.x.size(0), dtype=torch.long, device=self.device
+        )
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            latent, node_feats = self.encoder(pyg, return_node_feats=True)
 
         mask = torch.zeros(self.k_paths, dtype=torch.bool, device=self.device)
         for i in range(min(len(candidate_paths), self.k_paths)):
             mask[i] = True
+
+        path_edges = conv.paths_to_edge_indices(candidate_paths)
+        s_idx, d_idx = 0, 0
+        src_dst = None
+        if candidate_paths and len(candidate_paths[0]) > 0:
+            s_node = candidate_paths[0][0]
+            d_node = candidate_paths[0][-1]
+            s_idx = conv.idx_map.get(s_node, 0)
+            d_idx = conv.idx_map.get(d_node, 0)
+            src_dst = torch.tensor([[s_idx, d_idx]], dtype=torch.long, device=self.device)
 
         with torch.autocast(
             device_type=self.device.type,
@@ -751,9 +757,18 @@ class PPOAgent:
             enabled=self._amp_enabled,
         ):
             action, log_prob, value = self.ac_net.get_action(
-                latent, mask, deterministic=deterministic
+                latent=latent,
+                mask=mask,
+                deterministic=deterministic,
+                node_feats=node_feats,
+                edge_index=pyg.edge_index,
+                edge_attr=pyg.edge_attr,
+                path_edges=[path_edges],
+                src_dst=src_dst,
             )
         self._last_mask = mask
+        self._last_path_edges = path_edges
+        self._last_src_dst = (s_idx, d_idx) if src_dst is not None else None
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     # ── GAE Advantage Estimation (truly vectorised via scipy lfilter) ──────────
@@ -856,8 +871,10 @@ class PPOAgent:
                 pyg_list.append(conv.convert(snap))
 
         # ── Batch-encode all states in chunked passes (no grad) ────────────
+        # ── Batch-encode all states in chunked passes (no grad) ────────────
         # Chunking prevents VRAM allocation spikes when T is large (e.g. 32,768).
         all_latents_list = []
+        all_nfeats_list  = []
         chunk_sz = max(self.batch_size * 4, 2048)
         with torch.no_grad():
             with torch.autocast(
@@ -869,8 +886,25 @@ class PPOAgent:
                     c_batch = Batch.from_data_list(pyg_list[i : i + chunk_sz]).to(
                         self.device, non_blocking=True
                     )
-                    all_latents_list.append(self.encoder(c_batch))
-        all_latents_det = torch.cat(all_latents_list, dim=0)   # [T, hidden_dim]
+                    c_lat, c_nf = self.encoder(c_batch, return_node_feats=True)
+                    all_latents_list.append(c_lat)
+                    c_len = len(pyg_list[i : i + chunk_sz])
+                    n_per_g = c_nf.size(0) // c_len
+                    all_nfeats_list.append(c_nf.view(c_len, n_per_g, -1))
+
+        all_latents_det   = torch.cat(all_latents_list, dim=0)   # [T, hidden_dim]
+        all_nfeats_det    = torch.cat(all_nfeats_list, dim=0)    # [T, N+1, hidden_dim]
+        all_edge_attr_det = torch.stack([p.edge_attr for p in pyg_list]).to(self.device, non_blocking=True)
+
+        has_paths = (
+            len(self.buffer.path_edges) == T
+            and all(p is not None for p in self.buffer.path_edges)
+        )
+        if has_paths:
+            src_dst_list = [sd if sd is not None else (0, 0) for sd in self.buffer.src_dst]
+            src_dst_tensor = torch.tensor(src_dst_list, dtype=torch.long, device=self.device)
+        else:
+            src_dst_tensor = None
 
         # ── Action masks tensor for batch PPO updates ─────────────────────
         if len(self.buffer.masks) == T:
@@ -904,7 +938,23 @@ class PPOAgent:
                     dtype=self._amp_dtype,
                     enabled=self._amp_enabled,
                 ):
-                    logits, values_pred = self.ac_net(b_latents)
+                    if has_paths:
+                        idx_cpu = idx.cpu().tolist()
+                        b_paths = [self.buffer.path_edges[j] for j in idx_cpu]
+                        b_sd    = src_dst_tensor[idx] if src_dst_tensor is not None else None
+                        b_nf    = all_nfeats_det[idx]
+                        b_ea    = all_edge_attr_det[idx]
+                        logits, values_pred = self.ac_net(
+                            z_global=b_latents,
+                            node_feats=b_nf,
+                            edge_index=conv.edge_index,
+                            edge_attr=b_ea,
+                            path_edges=b_paths,
+                            src_dst=b_sd,
+                        )
+                    else:
+                        logits, values_pred = self.ac_net(b_latents)
+
                     logits = torch.nan_to_num(
                         logits, nan=0.0, posinf=10.0, neginf=-10.0
                     )
@@ -972,8 +1022,25 @@ class PPOAgent:
             dtype=self._amp_dtype,
             enabled=self._amp_enabled,
         ):
-            enc_lat_slice    = self.encoder(enc_pyg)              # [enc_size, hidden_dim]
-            logits_e, vals_e = self.ac_net(enc_lat_slice)
+            if has_paths:
+                enc_lat_slice, enc_nfeats = self.encoder(enc_pyg, return_node_feats=True)
+                n_per_g = enc_nfeats.size(0) // enc_size
+                enc_nf_3d = enc_nfeats.view(enc_size, n_per_g, -1)
+                enc_ea = all_edge_attr_det[enc_idx]
+                enc_paths = [self.buffer.path_edges[j] for j in enc_idx_cpu]
+                enc_sd = src_dst_tensor[enc_idx] if src_dst_tensor is not None else None
+                logits_e, vals_e = self.ac_net(
+                    z_global=enc_lat_slice,
+                    node_feats=enc_nf_3d,
+                    edge_index=conv.edge_index,
+                    edge_attr=enc_ea,
+                    path_edges=enc_paths,
+                    src_dst=enc_sd,
+                )
+            else:
+                enc_lat_slice    = self.encoder(enc_pyg)              # [enc_size, hidden_dim]
+                logits_e, vals_e = self.ac_net(enc_lat_slice)
+
             logits_e = torch.nan_to_num(
                 logits_e, nan=0.0, posinf=20.0, neginf=-20.0
             )

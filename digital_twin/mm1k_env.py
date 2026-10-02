@@ -292,17 +292,11 @@ class MM1KNetworkEnv(GymEnv):
         steps_per_hour = config.get("mm1k", {}).get("steps_per_hour", 60.0)
 
         env_seed = config.get("seed", 42)
-        from digital_twin.traffic_generator import TrafficGenerator
-        self.traffic_gen = TrafficGenerator(
+        from digital_twin.traffic_generator import create_traffic_generator
+        self.traffic_gen = create_traffic_generator(
             graph=self.G,
+            config=config,
             base_rate=tg_base_rate,
-            cov=cov,
-            burst_prob=burst_prob,
-            burst_scale=burst_scale,
-            ar_coeff=ar_coeff,
-            tod_amplitude=tod_amplitude,
-            tod_peak_hour=tod_peak_hour,
-            steps_per_hour=steps_per_hour,
             seed=env_seed,
         )
 
@@ -551,10 +545,13 @@ class MM1KNetworkEnv(GymEnv):
         self.step_count = 0
         self.traffic_gen.reset(seed=seed)
 
-        nodes = list(self.G.nodes())
-        pair  = self.np_random.choice(len(nodes), size=2, replace=False)
-        self.current_src = int(nodes[pair[0]])
-        self.current_dst = int(nodes[pair[1]])
+        if hasattr(self.traffic_gen, "sample_flow_pair"):
+            self.current_src, self.current_dst = self.traffic_gen.sample_flow_pair(self.np_random)
+        else:
+            nodes = list(self.G.nodes())
+            pair  = self.np_random.choice(len(nodes), size=2, replace=False)
+            self.current_src = int(nodes[pair[0]])
+            self.current_dst = int(nodes[pair[1]])
         self.candidate_paths = self._all_paths.get(
             (self.current_src, self.current_dst), []
         )
@@ -592,10 +589,13 @@ class MM1KNetworkEnv(GymEnv):
         reward = self._compute_reward(selected_path)
 
         # Transition demand pair for next step so policy routes dynamic flows
-        nodes = self._sorted_nodes
-        pair  = self.np_random.choice(len(nodes), size=2, replace=False)
-        self.current_src = int(nodes[pair[0]])
-        self.current_dst = int(nodes[pair[1]])
+        if hasattr(self.traffic_gen, "sample_flow_pair"):
+            self.current_src, self.current_dst = self.traffic_gen.sample_flow_pair(self.np_random)
+        else:
+            nodes = self._sorted_nodes
+            pair  = self.np_random.choice(len(nodes), size=2, replace=False)
+            self.current_src = int(nodes[pair[0]])
+            self.current_dst = int(nodes[pair[1]])
         self.candidate_paths = self._all_paths.get(
             (self.current_src, self.current_dst), []
         )
