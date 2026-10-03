@@ -318,8 +318,9 @@ class PathAttentionActorCritic(nn.Module):
         node_feats: Optional[torch.Tensor] = None,
         edge_index: Optional[torch.Tensor] = None,
         edge_attr: Optional[torch.Tensor] = None,
-        path_edges: Optional[List[List[List[int]]]] = None,
+        path_edges: Optional[Union[List[List[List[int]]], torch.Tensor]] = None,
         src_dst: Optional[torch.Tensor] = None,
+        path_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for Path-Attention Actor-Critic.
@@ -330,8 +331,9 @@ class PathAttentionActorCritic(nn.Module):
         node_feats : [B * (N+1), latent_dim] Node embeddings from GraphTransformer.
         edge_index : [2, E_batch] Directed edge connections.
         edge_attr  : [E_batch, 4] Dynamic edge telemetry attributes.
-        path_edges : List over batch of K paths, each path being a list of edge indices.
+        path_edges : List over batch of K paths OR [B, K, max_hops] edge tensor.
         src_dst    : [B, 2] Tensor of (src_node_idx, dst_node_idx) per batch item.
+        path_mask  : [B, K, max_hops] Optional boolean validity mask for path edges.
 
         Returns
         -------
@@ -389,39 +391,69 @@ class PathAttentionActorCritic(nn.Module):
 
         flow_raw = torch.cat([x_src, x_dst, z_global], dim=-1)
         h_flow = self.flow_mlp(flow_raw)   # [B, hidden_dim]
-
-        # 3. Embed each candidate path via mean and bottleneck pooling
-        logits_list = []
         q_flow = self.query_proj(h_flow)   # [B, hidden_dim]
 
-        for b in range(B):
-            b_paths  = path_edges[b] if b < len(path_edges) else []
-            b_h_flow = h_flow[b]            # [hidden_dim]
-            b_q_flow = q_flow[b]            # [hidden_dim]
-            b_z_glob = z_global[b]          # [latent_dim]
+        # 3. Embed all candidate paths in a fully-vectorized manner
+        if isinstance(path_edges, torch.Tensor):
+            path_edges_tensor = path_edges
+            if path_mask is None:
+                path_mask = (path_edges_tensor >= 0) & (path_edges_tensor < h_edge.size(1))
+        else:
+            # Convert list of paths to padded tensor in one batch pass
+            max_hops = 16
+            for b_p in path_edges:
+                for p in b_p:
+                    if len(p) > max_hops:
+                        max_hops = len(p)
+            E_pad = h_edge.size(1)
+            path_edges_tensor = torch.full((B, self.k_paths, max_hops), E_pad, dtype=torch.long, device=device)
+            path_mask = torch.zeros((B, self.k_paths, max_hops), dtype=torch.bool, device=device)
+            for b, b_paths in enumerate(path_edges):
+                if b >= B:
+                    break
+                for k in range(min(len(b_paths), self.k_paths)):
+                    hops = b_paths[k]
+                    l = len(hops)
+                    if l > 0:
+                        path_edges_tensor[b, k, :l] = torch.as_tensor(hops[:max_hops], dtype=torch.long, device=device)
+                        path_mask[b, k, :l] = True
 
-            path_scores = []
-            for k in range(self.k_paths):
-                if k < len(b_paths) and len(b_paths[k]) > 0:
-                    e_indices = torch.tensor(b_paths[k], dtype=torch.long, device=device)
-                    p_edge_embeds = h_edge[b, e_indices]   # [hops, hidden_dim]
+        M = path_edges_tensor.size(-1)
+        zero_pad = torch.zeros((B, 1, self.hidden_dim), dtype=h_edge.dtype, device=device)
+        h_edge_pad = torch.cat([h_edge, zero_pad], dim=1)  # [B, E+1, H]
+        b_idx = torch.arange(B, device=device)[:, None, None].expand(-1, self.k_paths, M)
+        h_paths = h_edge_pad[b_idx, path_edges_tensor]      # [B, K, M, H]
 
-                    mean_pool = p_edge_embeds.mean(dim=0)
-                    bottleneck_pool, _ = p_edge_embeds.max(dim=0)
-                    path_rep = self.path_mlp(torch.cat([mean_pool, bottleneck_pool], dim=-1))
+        mask_exp = path_mask.unsqueeze(-1)
+        hop_counts = path_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+        mean_pool = (h_paths * mask_exp).sum(dim=2) / hop_counts
 
-                    k_path = self.key_proj(path_rep)
-                    dot_score = (b_q_flow * k_path).sum() / (self.hidden_dim ** 0.5)
+        fill_neg = -1e4 if h_paths.dtype == torch.float16 else -1e9
+        h_paths_masked = h_paths.masked_fill(~mask_exp, fill_neg)
+        bottleneck_pool, _ = h_paths_masked.max(dim=2)
+        has_valid_path = (path_mask.sum(dim=-1) > 0).unsqueeze(-1)
+        bottleneck_pool = bottleneck_pool.masked_fill(~has_valid_path, 0.0)
 
-                    score_in = torch.cat([b_h_flow, path_rep, b_z_glob], dim=-1)
-                    mlp_score = self.score_mlp(score_in).squeeze(-1)
-                    path_scores.append(dot_score + mlp_score)
-                else:
-                    path_scores.append(torch.tensor(-1e4, device=device, dtype=z_global.dtype))
+        pool_feats = torch.cat([mean_pool, bottleneck_pool], dim=-1)   # [B, K, 2*H]
+        valid_mask = (path_mask.sum(dim=-1) > 0)                       # [B, K]
 
-            logits_list.append(torch.stack(path_scores))
+        # Batched path projection for all (B x K) paths simultaneously:
+        path_rep = self.path_mlp(pool_feats)            # [B, K, hidden_dim]
+        k_path   = self.key_proj(path_rep)              # [B, K, hidden_dim]
 
-        logits = torch.stack(logits_list, dim=0)   # [B, K]
+        # Batched cross-attention dot product:
+        q_flow_expanded = q_flow.unsqueeze(1)           # [B, 1, hidden_dim]
+        dot_scores = (q_flow_expanded * k_path).sum(dim=-1) / (self.hidden_dim ** 0.5)  # [B, K]
+
+        # Batched score MLP:
+        h_flow_expanded = h_flow.unsqueeze(1).expand(-1, self.k_paths, -1)     # [B, K, hidden_dim]
+        z_glob_expanded = z_global.unsqueeze(1).expand(-1, self.k_paths, -1)   # [B, K, latent_dim]
+        score_in = torch.cat([h_flow_expanded, path_rep, z_glob_expanded], dim=-1)  # [B, K, 2*H + latent_dim]
+        mlp_scores = self.score_mlp(score_in).squeeze(-1)                      # [B, K]
+
+        logits = dot_scores + mlp_scores                # [B, K]
+        fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
+        logits = logits.masked_fill(~valid_mask, fill_val)
 
         # 4. Critic value estimation
         critic_in = torch.cat([z_global, h_flow], dim=-1)

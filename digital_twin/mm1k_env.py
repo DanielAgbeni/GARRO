@@ -147,6 +147,10 @@ def mm1k_metrics(lam: float, mu: float, K: int
     return float(eq[0]), float(po[0]), float(md[0])
 
 
+# Global cache for K-shortest paths across all environment instances
+_GLOBAL_PATH_CACHE: Dict[Tuple[int, int, int], Dict[Tuple, List[List[int]]]] = {}
+
+
 # ── Environment ───────────────────────────────────────────────────────────────
 
 class MM1KNetworkEnv(GymEnv):
@@ -202,15 +206,20 @@ class MM1KNetworkEnv(GymEnv):
         self.edges_list: List[Tuple] = list(self.G.edges())
         self.n_edges    = len(self.edges_list)
 
-        # ── Pre-compute K-shortest paths (parallel, all CPU cores) ────────
-        self._all_paths: Dict[Tuple, List[List[int]]] = {}
-        n_cores = multiprocessing.cpu_count()
-        print(
-            f"[MM1KEnv] Pre-computing K={self.K} shortest paths for "
-            f"{self.num_nodes} nodes using {n_cores} threads …", flush=True
-        )
-        self._precompute_paths_parallel(n_cores)
-        print("[MM1KEnv] Path pre-computation done.", flush=True)
+        # ── Pre-compute K-shortest paths (cached globally across env instances) ──
+        cache_key = (self.num_nodes, self.num_edges, self.K)
+        if cache_key in _GLOBAL_PATH_CACHE:
+            self._all_paths = _GLOBAL_PATH_CACHE[cache_key]
+        else:
+            self._all_paths = {}
+            n_cores = max(1, multiprocessing.cpu_count())
+            print(
+                f"[MM1KEnv] Pre-computing K={self.K} shortest paths for "
+                f"{self.num_nodes} nodes using {n_cores} threads …", flush=True
+            )
+            self._precompute_paths_parallel(n_cores)
+            _GLOBAL_PATH_CACHE[cache_key] = self._all_paths
+            print("[MM1KEnv] Path pre-computation done.", flush=True)
 
         # ── Current episode state ─────────────────────────────────────────
         self.current_src: int      = 0

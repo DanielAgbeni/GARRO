@@ -176,7 +176,7 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=2500, help="Checkpoint frequency in episodes")
     parser.add_argument("--eval-every", type=int, default=1000, help="Evaluation frequency in episodes")
     parser.add_argument("--num-envs", type=int, default=16, help="Vectorized environments per worker")
-    parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
+    parser.add_argument("--compile", action="store_true", default=False, help="Enable torch.compile (default: False to avoid Triton GEMM freeze on Tesla T4)")
     args = parser.parse_args()
 
     rank, local_rank, world_size = setup_distributed()
@@ -208,7 +208,7 @@ def main():
         device = torch.device("cpu")
         config["training"]["amp_dtype"] = "float32"
 
-    compile_model = False if args.no_compile else config["training"].get("compile_model", False)
+    compile_model = args.compile
 
     # Output directory
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -297,29 +297,29 @@ def main():
             for env in vec_envs.envs:
                 stage = curriculum.update_environment(env, ep_idx)
 
-            # Step all vectorized environments
-            step_actions = []
-            for i, env in enumerate(vec_envs.envs):
-                c_paths = vec_envs.candidate_paths[i]
-                act, lp, val = agent.select_action(env.G, c_paths)
-                step_actions.append(act)
+            # Batched action selection across all N vectorized environments in ONE GPU pass
+            env_graphs = [env.G for env in vec_envs.envs]
+            acts, lps, vals, p_edges_batch, src_dst_batch, masks_batch = agent.select_actions_batch(
+                env_graphs, vec_envs.candidate_paths
+            )
 
-                # Snapshot & record transition into agent buffer
-                state_snap = agent.buffer._snapshot(env.G)
+            # Record transitions into agent buffer
+            for i in range(args.num_envs):
+                state_snap = agent.buffer._snapshot(env_graphs[i])
                 agent.buffer.add(
                     state=state_snap,
-                    action=act,
-                    log_prob=lp,
+                    action=int(acts[i]),
+                    log_prob=float(lps[i]),
                     reward=0.0,   # populated after step
-                    value=val,
+                    value=float(vals[i]),
                     done=False,
-                    mask=getattr(agent, "_last_mask", None),
-                    path_edges=getattr(agent, "_last_path_edges", None),
-                    src_dst=getattr(agent, "_last_src_dst", None),
+                    mask=masks_batch[i],
+                    path_edges=p_edges_batch[i],
+                    src_dst=src_dst_batch[i],
                 )
 
-            # Parallel environment stepping
-            step_results = vec_envs.step_all(step_actions)
+            # Vectorized parallel environment stepping
+            step_results = vec_envs.step_all(acts.tolist())
             step_count += args.num_envs
 
             # Backfill rewards & check for completed episodes

@@ -56,7 +56,7 @@ training:
   checkpoint_path: "checkpoints/"
   update_interval: 1024           # Rollout steps before each PPO update (base value; clamped by max_update_interval)
   max_update_interval: 8192       # Hard ceiling on RAM-aware update_interval inflation (was uncapped at 32768)
-  compile_model: true             # torch.compile encoder+AC-net (15–40% speedup; set false to debug)
+  compile_model: false            # Set false on Turing (Tesla T4) to avoid 14-minute Triton max_autotune freeze; Eager FP16 is instant
   num_workers: 0                  # Reserved: parallel env workers (0 = single-process; future feature)
 
 # ── Topology-Specific Overrides ──────────────────────────────────────────────

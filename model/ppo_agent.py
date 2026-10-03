@@ -771,6 +771,108 @@ class PPOAgent:
         self._last_src_dst = (s_idx, d_idx) if src_dst is not None else None
         return int(action.item()), float(log_prob.item()), float(value.item())
 
+    @torch.no_grad()
+    def select_actions_batch(
+        self,
+        graphs: List[nx.Graph],
+        candidate_paths_list: List[list],
+        deterministic: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List, List[Tuple[int, int]], torch.Tensor]:
+        """
+        Batched action selection for VectorDCNEnvs.
+        Encodes B graphs simultaneously in a single GPU pass to avoid per-env PCIe sync.
+
+        Returns:
+            actions: np.ndarray shape [B]
+            log_probs: np.ndarray shape [B]
+            values: np.ndarray shape [B]
+            path_edges_batch: List[List[List[int]]] of length B
+            src_dst_list: List[Tuple[int, int]] of length B
+            masks: torch.Tensor shape [B, K]
+        """
+        B = len(graphs)
+        if B == 0:
+            return (
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=np.float32),
+                np.empty(0, dtype=np.float32),
+                [],
+                [],
+                torch.empty(0),
+            )
+
+        conv = self._ensure_converter(graphs[0])
+        pyg_list = [conv.convert(g) for g in graphs]
+        batch_pyg = Batch.from_data_list(pyg_list).to(self.device, non_blocking=True)
+
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            z_global, node_feats = self.encoder(batch_pyg, return_node_feats=True)
+
+        N_per_g = node_feats.size(0) // B
+        node_feats_3d = node_feats.view(B, N_per_g, -1)
+        edge_attr_3d = torch.stack([p.edge_attr for p in pyg_list]).to(self.device, non_blocking=True)
+
+        path_edges_batch = []
+        src_dst_list = []
+        src_dst_coords = []
+        masks = torch.zeros((B, self.k_paths), dtype=torch.bool, device=self.device)
+
+        for b, c_paths in enumerate(candidate_paths_list):
+            p_edges = conv.paths_to_edge_indices(c_paths)
+            path_edges_batch.append(p_edges)
+            for k in range(min(len(c_paths), self.k_paths)):
+                masks[b, k] = True
+
+            if c_paths and len(c_paths[0]) > 0:
+                s_node = c_paths[0][0]
+                d_node = c_paths[0][-1]
+                s_idx = conv.idx_map.get(s_node, 0)
+                d_idx = conv.idx_map.get(d_node, 0)
+                src_dst_list.append((s_idx, d_idx))
+                src_dst_coords.append([s_idx, d_idx])
+            else:
+                src_dst_list.append((0, 0))
+                src_dst_coords.append([0, 0])
+
+        src_dst_tensor = torch.tensor(src_dst_coords, dtype=torch.long, device=self.device)
+
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            logits, values = self.ac_net(
+                z_global=z_global,
+                node_feats=node_feats_3d,
+                edge_index=conv.edge_index,
+                edge_attr=edge_attr_3d,
+                path_edges=path_edges_batch,
+                src_dst=src_dst_tensor,
+            )
+
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
+            logits = torch.clamp(logits, -10.0, 10.0)
+            fill_val = -1e4 if logits.dtype == torch.float16 else -1e9
+            logits = logits.masked_fill(~masks, fill_val)
+
+            dist = Categorical(logits=logits)
+            if deterministic:
+                actions = logits.argmax(dim=-1)
+            else:
+                actions = dist.sample()
+            log_probs = dist.log_prob(actions)
+
+        actions_np = actions.cpu().numpy()
+        log_probs_np = log_probs.cpu().numpy()
+        values_np = values.cpu().numpy()
+        masks_cpu = masks.cpu()
+
+        return actions_np, log_probs_np, values_np, path_edges_batch, src_dst_list, masks_cpu
+
     # ── GAE Advantage Estimation (truly vectorised via scipy lfilter) ──────────
 
     def _compute_gae(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -903,8 +1005,33 @@ class PPOAgent:
         if has_paths:
             src_dst_list = [sd if sd is not None else (0, 0) for sd in self.buffer.src_dst]
             src_dst_tensor = torch.tensor(src_dst_list, dtype=torch.long, device=self.device)
+
+            # Pre-pad path edges into tensor once for the entire buffer T
+            max_hops = 16
+            for p_list in self.buffer.path_edges:
+                if p_list:
+                    for p in p_list:
+                        if len(p) > max_hops:
+                            max_hops = len(p)
+            E_pad = conv.edge_index.size(1)
+            all_path_edges_det = torch.full(
+                (T, self.k_paths, max_hops), E_pad, dtype=torch.long, device=self.device
+            )
+            all_path_masks_det = torch.zeros(
+                (T, self.k_paths, max_hops), dtype=torch.bool, device=self.device
+            )
+            for i, p_list in enumerate(self.buffer.path_edges):
+                if p_list:
+                    for k in range(min(len(p_list), self.k_paths)):
+                        hops = p_list[k]
+                        l = len(hops)
+                        if l > 0:
+                            all_path_edges_det[i, k, :l] = torch.as_tensor(hops[:max_hops], dtype=torch.long, device=self.device)
+                            all_path_masks_det[i, k, :l] = True
         else:
             src_dst_tensor = None
+            all_path_edges_det = None
+            all_path_masks_det = None
 
         # ── Action masks tensor for batch PPO updates ─────────────────────
         if len(self.buffer.masks) == T:
@@ -939,8 +1066,8 @@ class PPOAgent:
                     enabled=self._amp_enabled,
                 ):
                     if has_paths:
-                        idx_cpu = idx.cpu().tolist()
-                        b_paths = [self.buffer.path_edges[j] for j in idx_cpu]
+                        b_paths = all_path_edges_det[idx]
+                        b_pmask = all_path_masks_det[idx]
                         b_sd    = src_dst_tensor[idx] if src_dst_tensor is not None else None
                         b_nf    = all_nfeats_det[idx]
                         b_ea    = all_edge_attr_det[idx]
@@ -950,6 +1077,7 @@ class PPOAgent:
                             edge_index=conv.edge_index,
                             edge_attr=b_ea,
                             path_edges=b_paths,
+                            path_mask=b_pmask,
                             src_dst=b_sd,
                         )
                     else:
@@ -1027,7 +1155,8 @@ class PPOAgent:
                 n_per_g = enc_nfeats.size(0) // enc_size
                 enc_nf_3d = enc_nfeats.view(enc_size, n_per_g, -1)
                 enc_ea = all_edge_attr_det[enc_idx]
-                enc_paths = [self.buffer.path_edges[j] for j in enc_idx_cpu]
+                enc_paths = all_path_edges_det[enc_idx]
+                enc_pmask = all_path_masks_det[enc_idx]
                 enc_sd = src_dst_tensor[enc_idx] if src_dst_tensor is not None else None
                 logits_e, vals_e = self.ac_net(
                     z_global=enc_lat_slice,
@@ -1035,6 +1164,7 @@ class PPOAgent:
                     edge_index=conv.edge_index,
                     edge_attr=enc_ea,
                     path_edges=enc_paths,
+                    path_mask=enc_pmask,
                     src_dst=enc_sd,
                 )
             else:
