@@ -79,6 +79,21 @@ def _model_name_from_checkpoint(checkpoint: str) -> str:
     return _safe_path_name(Path(checkpoint).stem)
 
 
+def _label_for_checkpoint(path: str) -> str:
+    stem = Path(path).stem
+    match = re.search(r"ep(\d+)", stem)
+    if match:
+        ep_num = int(match.group(1))
+        k_num = f"{ep_num // 1000}k" if ep_num >= 1000 else str(ep_num)
+        return f"GARRO (ep{k_num})"
+    if "final" in stem.lower():
+        return "GARRO (Final)"
+    if "latest" in stem.lower():
+        return "GARRO (Latest)"
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-")
+    return f"GARRO ({cleaned[:15]})"
+
+
 def _make_eval_output_dir(
     base_dir: str,
     model_name: str,
@@ -184,6 +199,7 @@ def run_garro(
     agent:    PPOAgent,
     episodes: int,
     deterministic: bool = True,
+    desc:     str = "GARRO   ",
 ) -> dict:
     """
     GARRO (PPO + Graph Transformer) evaluation — no gradient updates.
@@ -197,7 +213,7 @@ def run_garro(
     agent.encoder.eval()
     agent.ac_net.eval()
 
-    for ep in tqdm(range(episodes), desc="GARRO   ", dynamic_ncols=True,
+    for ep in tqdm(range(episodes), desc=desc, dynamic_ncols=True,
                   position=0, leave=True):
         obs, _ = env.reset(seed=ep + 42)
         done   = False
@@ -248,7 +264,59 @@ def main(args):
     if args.arrival_rate is not None:
         config["mm1k"]["base_arrival_rate"] = args.arrival_rate
 
-    model_name = _model_name_from_checkpoint(args.checkpoint)
+    # Resolve all checkpoint files from arguments (file, list, directory, or wildcard)
+    if isinstance(args.checkpoint, str):
+        raw_checkpoints = [args.checkpoint]
+    else:
+        raw_checkpoints = list(args.checkpoint)
+
+    import glob
+    checkpoint_paths = []
+    for cp in raw_checkpoints:
+        if os.path.isdir(cp):
+            found = glob.glob(os.path.join(cp, "**", "*.pt"), recursive=True)
+            checkpoint_paths.extend(found)
+        elif "*" in cp:
+            checkpoint_paths.extend(glob.glob(cp, recursive=True))
+        elif os.path.isfile(cp):
+            checkpoint_paths.append(cp)
+
+    checkpoint_paths = [p for p in checkpoint_paths if p.endswith(".pt")]
+    # If final is present, filter out latest to avoid redundant evaluation of identical weights
+    has_final = any("final" in os.path.basename(p) for p in checkpoint_paths)
+    if has_final:
+        checkpoint_paths = [p for p in checkpoint_paths if "latest" not in os.path.basename(p)]
+
+    # Deduplicate while preserving order
+    seen = set()
+    deduped = []
+    for p in checkpoint_paths:
+        abs_p = os.path.abspath(p)
+        if abs_p not in seen and os.path.exists(abs_p):
+            seen.add(abs_p)
+            deduped.append(abs_p)
+    checkpoint_paths = deduped
+
+    # Sort checkpoints: ep<N> numerically first, then final/latest
+    def _sort_key(p):
+        stem = Path(p).stem
+        match = re.search(r"ep(\d+)", stem)
+        if match:
+            return (0, int(match.group(1)))
+        if "final" in stem.lower():
+            return (1, 999999999)
+        return (2, stem)
+
+    checkpoint_paths.sort(key=_sort_key)
+
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No valid .pt checkpoint files found for: {args.checkpoint}")
+
+    if len(checkpoint_paths) == 1:
+        model_name = _model_name_from_checkpoint(checkpoint_paths[0])
+    else:
+        model_name = f"multi_ckpt_{len(checkpoint_paths)}"
+
     output_dir = _make_eval_output_dir(
         args.output_dir,
         model_name,
@@ -263,13 +331,13 @@ def main(args):
     G   = TOPOLOGY_MAP[args.topology]()
     env = MM1KNetworkEnv(G, config)
 
-    sep = "=" * 66
+    sep = "=" * 76
     print(f"\n{sep}")
-    print(f"  GARRO Benchmarking — {args.topology.upper()} "
+    print(f"  GARRO Multi-Checkpoint & Baseline Benchmarking — {args.topology.upper()} "
           f"({G.number_of_nodes()} nodes, {G.number_of_edges()} links)")
     print(f"  Episodes per algorithm : {args.episodes}")
     print(f"  Base Arrival Rate (λ)  : {config['mm1k']['base_arrival_rate']} (Service Rate μ: {config['mm1k']['base_service_rate']})")
-    print(f"  Model evaluated        : {model_name}")
+    print(f"  Checkpoints detected   : {len(checkpoint_paths)} ({', '.join(os.path.basename(p) for p in checkpoint_paths)})")
     print(f"  Output directory       : {output_dir}")
     print(f"  Device (GARRO)         : {device}")
     print(f"  CPU cores              : {n_cores}")
@@ -279,10 +347,7 @@ def main(args):
     results = {}
     t0      = time.perf_counter()
 
-    # ── Parallel baseline evaluation ──────────────────────────────────────
-    # OSPF, ECMP, Random are independent → run on 3 separate processes.
-    # Each process rebuilds the env from scratch (lightweight) so there is
-    # no shared state and no GIL contention.
+    # ── Parallel baseline evaluation (Run ONCE) ───────────────────────────
     baseline_args = [
         ("OSPF",   args.topology, config, args.episodes, 0),
         ("ECMP",   args.topology, config, args.episodes, 1),
@@ -311,13 +376,15 @@ def main(args):
                 results[algo] = {
                     "mean_reward": float("nan"),
                     "std": 0.0, "min": 0.0, "max": 0.0,
+                    "latency_ms": 0.0, "packet_loss_pct": 0.0,
+                    "tput_ratio": 0.0, "util_variance": 0.0,
                 }
 
     baseline_elapsed = time.perf_counter() - t0
     print(f"\n[Eval] Baselines finished in {baseline_elapsed:.1f}s\n")
 
-    # ── GARRO evaluation (main process, uses loaded model) ────────────────
-    print("[Eval] Loading GARRO checkpoint …")
+    # ── GARRO evaluation (sequential across checkpoints) ──────────────────
+    print(f"[Eval] Initializing GARRO agent for {len(checkpoint_paths)} checkpoint(s) …")
     agent = PPOAgent(
         config,
         k_paths=config["network"]["k_paths"],
@@ -325,36 +392,63 @@ def main(args):
         device=device,
         compile_model=False,    # no need to compile for one-shot eval
     )
-    agent.load(args.checkpoint)
-    print("[Eval] Running GARRO (PPO) …")
-    results["GARRO"] = run_garro(env, agent, args.episodes)
+
+    garro_labels = []
+    for ckpt_path in checkpoint_paths:
+        label = _label_for_checkpoint(ckpt_path)
+        orig_label = label
+        c = 2
+        while label in results:
+            label = f"{orig_label}-{c}"
+            c += 1
+        garro_labels.append(label)
+        print(f"[Eval] Loading {label} ← {os.path.basename(ckpt_path)} …")
+        agent.load(ckpt_path)
+        results[label] = run_garro(env, agent, args.episodes, desc=f"{label:<14}")
 
     total_elapsed = time.perf_counter() - t0
     print(f"\n[Eval] Total evaluation time: {total_elapsed:.1f}s\n")
 
+    # ── Identify Best Model ───────────────────────────────────────────────
+    best_garro = max(garro_labels, key=lambda l: results[l]["mean_reward"])
+    best_res = results[best_garro]
+
     # ── Print results table ───────────────────────────────────────────────
-    # Preserve display order: Random → OSPF → ECMP → GARRO
-    ordered = ["Random", "OSPF", "ECMP", "GARRO"]
+    ordered = ["Random", "OSPF", "ECMP"] + garro_labels
     print(f"{sep}")
-    print(f"  {'Algorithm':<10} {'Mean Reward':>12} {'Latency (ms)':>14} "
+    print(f"  {'Algorithm / Model':<18} {'Mean Reward':>12} {'Latency (ms)':>14} "
           f"{'Loss (%)':>10} {'Tput Ratio':>12} {'Link Var':>10}")
-    print(f"  {'─'*72}")
+    print(f"  {'─'*78}")
     for name in ordered:
         if name not in results:
             continue
         r      = results[name]
-        marker = " ← GARRO" if name == "GARRO" else ""
-        print(f"  {name:<10} {r['mean_reward']:>12.4f} {r['latency_ms']:>14.2f} "
+        marker = " 🏆 BEST" if name == best_garro else (" ← GARRO" if name in garro_labels else "")
+        print(f"  {name:<18} {r['mean_reward']:>12.4f} {r['latency_ms']:>14.2f} "
               f"{r['packet_loss_pct']:>10.3f}% {r['tput_ratio']:>12.4f} {r['util_variance']:>10.4f}{marker}")
-    print(f"{sep}\n")
+    print(f"{sep}")
+    print(f"  🏆 Top-Performing GARRO Checkpoint : {best_garro}")
+    print(f"     Mean Reward: {best_res['mean_reward']:+.4f} | "
+          f"Average Latency: {best_res['latency_ms']:.2f} ms | "
+          f"Packet Loss: {best_res['packet_loss_pct']:.3f}%\n")
 
     # ── Bar chart (Reward) ────────────────────────────────────────────────
     names  = [n for n in ordered if n in results]
     means  = [results[n]["mean_reward"] for n in names]
     stds   = [results[n]["std"]         for n in names]
-    colors = ["#95A5A6", "#E74C3C", "#F39C12", "#2ECC71"]
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    base_colors = {"Random": "#95A5A6", "OSPF": "#E74C3C", "ECMP": "#F39C12"}
+    palette = ["#2ECC71", "#1ABC9C", "#3498DB", "#9B59B6", "#E67E22", "#27AE60"]
+    colors = []
+    g_idx = 0
+    for n in names:
+        if n in base_colors:
+            colors.append(base_colors[n])
+        else:
+            colors.append(palette[g_idx % len(palette)])
+            g_idx += 1
+
+    fig, ax = plt.subplots(figsize=(max(9, len(names) * 1.5), 5.5))
     bars = ax.bar(
         names, means, yerr=stds, color=colors[:len(names)],
         capsize=7, edgecolor="black", linewidth=0.8, alpha=0.9,
@@ -365,17 +459,18 @@ def main(args):
             bar.get_x() + bar.get_width() / 2.0,
             bar.get_height() + 0.002,
             f"{mean_val:.3f}",
-            ha="center", va="bottom", fontsize=9, fontweight="bold",
+            ha="center", va="bottom", fontsize=8.5, fontweight="bold",
         )
 
     ax.set_ylabel("Mean Episode Reward (Higher is Better)", fontsize=11)
     ax.set_title(
-        f"GARRO Routing Reward Comparison — {args.topology.upper()} "
+        f"GARRO Multi-Checkpoint Routing Comparison — {args.topology.upper()} "
         f"({args.episodes} episodes) | Device: {device}",
         fontsize=11,
     )
     ax.axhline(y=0, color="black", linewidth=0.5, linestyle="--", alpha=0.5)
     ax.grid(axis="y", alpha=0.3)
+    plt.xticks(rotation=15, ha="right")
     fig.tight_layout()
 
     output_file_stem = f"eval_results_{model_name}_{args.topology}_ep{args.episodes}"
@@ -385,38 +480,97 @@ def main(args):
     print(f"[Eval] Reward chart saved       → {chart_path}")
 
     # ── 4-Panel DCN Performance Metrics Figure ────────────────────────────
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    fig.suptitle(f"GARRO DCN Routing Performance Benchmarks ({args.topology.upper()})", fontsize=14, fontweight="bold")
+    fig, axes = plt.subplots(2, 2, figsize=(max(12, len(names) * 1.8), 8.5))
+    fig.suptitle(f"GARRO DCN Routing Benchmarks ({args.topology.upper()}) — All Checkpoints vs Baselines", fontsize=13, fontweight="bold")
 
     # 1. Mean Reward
     axes[0, 0].bar(names, [results[n]["mean_reward"] for n in names], color=colors[:len(names)], edgecolor="black")
     axes[0, 0].set_title("Mean Reward (Higher is Better)")
     axes[0, 0].set_ylabel("Reward")
     axes[0, 0].grid(axis="y", alpha=0.3)
+    axes[0, 0].tick_params(axis="x", rotation=15)
 
     # 2. Latency (ms)
     axes[0, 1].bar(names, [results[n]["latency_ms"] for n in names], color=colors[:len(names)], edgecolor="black")
     axes[0, 1].set_title("Path Latency (ms) (Lower is Better)")
     axes[0, 1].set_ylabel("Latency (ms)")
     axes[0, 1].grid(axis="y", alpha=0.3)
+    axes[0, 1].tick_params(axis="x", rotation=15)
 
     # 3. Packet Loss (%)
     axes[1, 0].bar(names, [results[n]["packet_loss_pct"] for n in names], color=colors[:len(names)], edgecolor="black")
     axes[1, 0].set_title("Packet Loss Rate (%) (Lower is Better)")
     axes[1, 0].set_ylabel("Loss Rate (%)")
     axes[1, 0].grid(axis="y", alpha=0.3)
+    axes[1, 0].tick_params(axis="x", rotation=15)
 
     # 4. Link Utilization Variance (Load Balance)
     axes[1, 1].bar(names, [results[n]["util_variance"] for n in names], color=colors[:len(names)], edgecolor="black")
     axes[1, 1].set_title("Link Utilization Variance (Lower is More Balanced)")
     axes[1, 1].set_ylabel("Variance")
     axes[1, 1].grid(axis="y", alpha=0.3)
+    axes[1, 1].tick_params(axis="x", rotation=15)
 
     fig.tight_layout()
     dcn_chart_path = output_dir / f"eval_dcn_metrics_{model_name}_{args.topology}_ep{args.episodes}.png"
     fig.savefig(dcn_chart_path, dpi=150)
     plt.close(fig)
     print(f"[Eval] 4-Panel DCN QoS chart    → {dcn_chart_path}")
+
+    # ── Checkpoint Progression Line Chart (if >= 2 GARRO models) ──────────
+    if len(garro_labels) >= 2:
+        fig, axes = plt.subplots(1, 3, figsize=(16, 4.8))
+        fig.suptitle(f"GARRO Checkpoint Evolution & Convergence across Curriculum Stages", fontsize=13, fontweight="bold")
+
+        x_indices = list(range(len(garro_labels)))
+        g_rewards = [results[l]["mean_reward"] for l in garro_labels]
+        g_lats    = [results[l]["latency_ms"] for l in garro_labels]
+        g_losses  = [results[l]["packet_loss_pct"] for l in garro_labels]
+
+        # 1. Reward Evolution
+        axes[0].plot(x_indices, g_rewards, marker="o", color="#2ECC71", linewidth=2.5, label="GARRO Progression")
+        if "ECMP" in results:
+            axes[0].axhline(y=results["ECMP"]["mean_reward"], color="#F39C12", linestyle="--", label="ECMP Baseline")
+        if "OSPF" in results:
+            axes[0].axhline(y=results["OSPF"]["mean_reward"], color="#E74C3C", linestyle="--", label="OSPF Baseline")
+        axes[0].set_xticks(x_indices)
+        axes[0].set_xticklabels(garro_labels, rotation=15)
+        axes[0].set_title("Mean Reward Progression")
+        axes[0].set_ylabel("Reward (Higher is Better)")
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(loc="lower right")
+
+        # 2. Latency Evolution
+        axes[1].plot(x_indices, g_lats, marker="s", color="#3498DB", linewidth=2.5, label="GARRO Progression")
+        if "ECMP" in results:
+            axes[1].axhline(y=results["ECMP"]["latency_ms"], color="#F39C12", linestyle="--", label="ECMP Baseline")
+        if "OSPF" in results:
+            axes[1].axhline(y=results["OSPF"]["latency_ms"], color="#E74C3C", linestyle="--", label="OSPF Baseline")
+        axes[1].set_xticks(x_indices)
+        axes[1].set_xticklabels(garro_labels, rotation=15)
+        axes[1].set_title("Path Latency (ms)")
+        axes[1].set_ylabel("Latency in ms (Lower is Better)")
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(loc="upper right")
+
+        # 3. Packet Loss Evolution
+        axes[2].plot(x_indices, g_losses, marker="^", color="#E74C3C", linewidth=2.5, label="GARRO Progression")
+        if "ECMP" in results:
+            axes[2].axhline(y=results["ECMP"]["packet_loss_pct"], color="#F39C12", linestyle="--", label="ECMP Baseline")
+        if "OSPF" in results:
+            axes[2].axhline(y=results["OSPF"]["packet_loss_pct"], color="#E74C3C", linestyle="--", label="OSPF Baseline")
+        axes[2].set_xticks(x_indices)
+        axes[2].set_xticklabels(garro_labels, rotation=15)
+        axes[2].set_title("Packet Loss Rate (%)")
+        axes[2].set_ylabel("Loss Rate % (Lower is Better)")
+        axes[2].grid(True, alpha=0.3)
+        axes[2].legend(loc="upper right")
+
+        fig.tight_layout()
+        prog_chart_path = output_dir / f"eval_checkpoint_evolution_{args.topology}_ep{args.episodes}.png"
+        fig.savefig(prog_chart_path, dpi=150)
+        plt.close(fig)
+        print(f"[Eval] Evolution chart saved    → {prog_chart_path}")
 
     # ── CSV ───────────────────────────────────────────────────────────────
     df = pd.DataFrame(
@@ -431,7 +585,6 @@ def main(args):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Required for ProcessPoolExecutor on all platforms (especially Windows/macOS)
     multiprocessing.freeze_support()
 
     parser = argparse.ArgumentParser(
@@ -439,8 +592,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--checkpoint",
+        nargs="+",
         required=True,
-        help="Path to trained GARRO checkpoint (.pt)",
+        help="Path(s) to trained GARRO checkpoint (.pt) or directory containing checkpoints",
     )
     parser.add_argument(
         "--topology",
