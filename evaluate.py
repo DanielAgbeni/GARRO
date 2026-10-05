@@ -394,5 +394,11 @@ if __name__ == "__main__":
         default=1,
         help="Number of random seeds / trials to aggregate across (default: 1)",
     )
+    parser.add_argument(
+        "--compare-all",
+        action="store_true",
+        default=True,
+        help="Compare GARRO against all baselines (OSPF, ECMP, Random)",
+    )
     args = parser.parse_args()
     main(args)
