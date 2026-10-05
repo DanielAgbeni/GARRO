@@ -119,8 +119,12 @@ def _run_baseline_worker(args_tuple) -> dict:
     env = MM1KNetworkEnv(G, config)
     rng = np.random.default_rng(seed)
 
-    rewards = []
-    desc    = f"{algo_name:<8}"
+    rewards   = []
+    all_lats  = []
+    all_loss  = []
+    all_tputs = []
+    all_vars  = []
+    desc      = f"{algo_name:<8}"
 
     for ep in tqdm(range(episodes), desc=desc, position=0, leave=True,
                    dynamic_ncols=True):
@@ -128,7 +132,10 @@ def _run_baseline_worker(args_tuple) -> dict:
         done   = False
         ep_r   = 0.0
         step   = 0
-
+        ep_lats  = []
+        ep_loss  = []
+        ep_tputs = []
+        ep_vars  = []
 
         while not done:
             n_paths = max(len(env.candidate_paths), 1)
@@ -142,19 +149,33 @@ def _run_baseline_worker(args_tuple) -> dict:
             else:
                 raise ValueError(f"Unknown baseline: {algo_name}")
 
-            obs, r, terminated, truncated, _ = env.step(action)
+            obs, r, terminated, truncated, info = env.step(action)
             done  = terminated or truncated
             ep_r += r
+            raw = info.get("raw_reward_terms", {})
+            ep_lats.append(float(info.get("path_latency_ms", raw.get("D_path", 0.0))))
+            ep_loss.append(float(raw.get("total_loss", 0.0) * 100.0))
+            ep_tputs.append(float(raw.get("tput_ratio", 1.0)))
+            ep_vars.append(float(raw.get("util_variance", 0.0)))
             step += 1
 
         rewards.append(ep_r)
+        if ep_lats:
+            all_lats.append(float(np.mean(ep_lats)))
+            all_loss.append(float(np.mean(ep_loss)))
+            all_tputs.append(float(np.mean(ep_tputs)))
+            all_vars.append(float(np.mean(ep_vars)))
 
     return {
-        "name":        algo_name,
-        "mean_reward": float(np.mean(rewards)),
-        "std":         float(np.std(rewards)),
-        "min":         float(np.min(rewards)),
-        "max":         float(np.max(rewards)),
+        "name":            algo_name,
+        "mean_reward":     float(np.mean(rewards)),
+        "std":             float(np.std(rewards)),
+        "min":             float(np.min(rewards)),
+        "max":             float(np.max(rewards)),
+        "latency_ms":      float(np.mean(all_lats)) if all_lats else 0.0,
+        "packet_loss_pct": float(np.mean(all_loss)) if all_loss else 0.0,
+        "tput_ratio":      float(np.mean(all_tputs)) if all_tputs else 1.0,
+        "util_variance":   float(np.mean(all_vars)) if all_vars else 0.0,
     }
 
 
@@ -168,7 +189,11 @@ def run_garro(
     GARRO (PPO + Graph Transformer) evaluation — no gradient updates.
     Runs on the main process so the loaded model stays in-memory.
     """
-    rewards = []
+    rewards   = []
+    all_lats  = []
+    all_loss  = []
+    all_tputs = []
+    all_vars  = []
     agent.encoder.eval()
     agent.ac_net.eval()
 
@@ -177,21 +202,40 @@ def run_garro(
         obs, _ = env.reset(seed=ep + 42)
         done   = False
         ep_r   = 0.0
+        ep_lats  = []
+        ep_loss  = []
+        ep_tputs = []
+        ep_vars  = []
 
         while not done:
             action, _, _ = agent.select_action(
                 env.G, env.candidate_paths, deterministic=deterministic
             )
-            obs, r, terminated, truncated, _ = env.step(action)
+            obs, r, terminated, truncated, info = env.step(action)
             done  = terminated or truncated
             ep_r += r
+            raw = info.get("raw_reward_terms", {})
+            ep_lats.append(float(info.get("path_latency_ms", raw.get("D_path", 0.0))))
+            ep_loss.append(float(raw.get("total_loss", 0.0) * 100.0))
+            ep_tputs.append(float(raw.get("tput_ratio", 1.0)))
+            ep_vars.append(float(raw.get("util_variance", 0.0)))
+
         rewards.append(ep_r)
+        if ep_lats:
+            all_lats.append(float(np.mean(ep_lats)))
+            all_loss.append(float(np.mean(ep_loss)))
+            all_tputs.append(float(np.mean(ep_tputs)))
+            all_vars.append(float(np.mean(ep_vars)))
 
     return {
-        "mean_reward": float(np.mean(rewards)),
-        "std":         float(np.std(rewards)),
-        "min":         float(np.min(rewards)),
-        "max":         float(np.max(rewards)),
+        "mean_reward":     float(np.mean(rewards)),
+        "std":             float(np.std(rewards)),
+        "min":             float(np.min(rewards)),
+        "max":             float(np.max(rewards)),
+        "latency_ms":      float(np.mean(all_lats)) if all_lats else 0.0,
+        "packet_loss_pct": float(np.mean(all_loss)) if all_loss else 0.0,
+        "tput_ratio":      float(np.mean(all_tputs)) if all_tputs else 1.0,
+        "util_variance":   float(np.mean(all_vars)) if all_vars else 0.0,
     }
 
 
@@ -292,19 +336,19 @@ def main(args):
     # Preserve display order: Random → OSPF → ECMP → GARRO
     ordered = ["Random", "OSPF", "ECMP", "GARRO"]
     print(f"{sep}")
-    print(f"  {'Algorithm':<12} {'Mean Reward':>14} {'Std Dev':>10} "
-          f"{'Min':>10} {'Max':>10}")
-    print(f"  {'─'*58}")
+    print(f"  {'Algorithm':<10} {'Mean Reward':>12} {'Latency (ms)':>14} "
+          f"{'Loss (%)':>10} {'Tput Ratio':>12} {'Link Var':>10}")
+    print(f"  {'─'*72}")
     for name in ordered:
         if name not in results:
             continue
         r      = results[name]
         marker = " ← GARRO" if name == "GARRO" else ""
-        print(f"  {name:<12} {r['mean_reward']:>14.4f} {r['std']:>10.4f} "
-              f"{r['min']:>10.4f} {r['max']:>10.4f}{marker}")
+        print(f"  {name:<10} {r['mean_reward']:>12.4f} {r['latency_ms']:>14.2f} "
+              f"{r['packet_loss_pct']:>10.3f}% {r['tput_ratio']:>12.4f} {r['util_variance']:>10.4f}{marker}")
     print(f"{sep}\n")
 
-    # ── Bar chart ─────────────────────────────────────────────────────────
+    # ── Bar chart (Reward) ────────────────────────────────────────────────
     names  = [n for n in ordered if n in results]
     means  = [results[n]["mean_reward"] for n in names]
     stds   = [results[n]["std"]         for n in names]
@@ -316,7 +360,6 @@ def main(args):
         capsize=7, edgecolor="black", linewidth=0.8, alpha=0.9,
     )
 
-    # Annotate bars with values
     for bar, mean_val in zip(bars, means):
         ax.text(
             bar.get_x() + bar.get_width() / 2.0,
@@ -325,9 +368,9 @@ def main(args):
             ha="center", va="bottom", fontsize=9, fontweight="bold",
         )
 
-    ax.set_ylabel("Mean Episode Reward", fontsize=11)
+    ax.set_ylabel("Mean Episode Reward (Higher is Better)", fontsize=11)
     ax.set_title(
-        f"Routing Algorithm Comparison — {args.topology.upper()} "
+        f"GARRO Routing Reward Comparison — {args.topology.upper()} "
         f"({args.episodes} episodes) | Device: {device}",
         fontsize=11,
     )
@@ -339,7 +382,41 @@ def main(args):
     chart_path = output_dir / f"{output_file_stem}.png"
     fig.savefig(chart_path, dpi=150)
     plt.close(fig)
-    print(f"[Eval] Bar chart saved → {chart_path}")
+    print(f"[Eval] Reward chart saved       → {chart_path}")
+
+    # ── 4-Panel DCN Performance Metrics Figure ────────────────────────────
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.suptitle(f"GARRO DCN Routing Performance Benchmarks ({args.topology.upper()})", fontsize=14, fontweight="bold")
+
+    # 1. Mean Reward
+    axes[0, 0].bar(names, [results[n]["mean_reward"] for n in names], color=colors[:len(names)], edgecolor="black")
+    axes[0, 0].set_title("Mean Reward (Higher is Better)")
+    axes[0, 0].set_ylabel("Reward")
+    axes[0, 0].grid(axis="y", alpha=0.3)
+
+    # 2. Latency (ms)
+    axes[0, 1].bar(names, [results[n]["latency_ms"] for n in names], color=colors[:len(names)], edgecolor="black")
+    axes[0, 1].set_title("Path Latency (ms) (Lower is Better)")
+    axes[0, 1].set_ylabel("Latency (ms)")
+    axes[0, 1].grid(axis="y", alpha=0.3)
+
+    # 3. Packet Loss (%)
+    axes[1, 0].bar(names, [results[n]["packet_loss_pct"] for n in names], color=colors[:len(names)], edgecolor="black")
+    axes[1, 0].set_title("Packet Loss Rate (%) (Lower is Better)")
+    axes[1, 0].set_ylabel("Loss Rate (%)")
+    axes[1, 0].grid(axis="y", alpha=0.3)
+
+    # 4. Link Utilization Variance (Load Balance)
+    axes[1, 1].bar(names, [results[n]["util_variance"] for n in names], color=colors[:len(names)], edgecolor="black")
+    axes[1, 1].set_title("Link Utilization Variance (Lower is More Balanced)")
+    axes[1, 1].set_ylabel("Variance")
+    axes[1, 1].grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    dcn_chart_path = output_dir / f"eval_dcn_metrics_{model_name}_{args.topology}_ep{args.episodes}.png"
+    fig.savefig(dcn_chart_path, dpi=150)
+    plt.close(fig)
+    print(f"[Eval] 4-Panel DCN QoS chart    → {dcn_chart_path}")
 
     # ── CSV ───────────────────────────────────────────────────────────────
     df = pd.DataFrame(
@@ -347,7 +424,7 @@ def main(args):
     ).T
     csv_path = output_dir / f"{output_file_stem}.csv"
     df.to_csv(csv_path)
-    print(f"[Eval] CSV saved       → {csv_path}")
+    print(f"[Eval] CSV saved                 → {csv_path}")
     print("\n[Eval] Done. ✓")
 
 
