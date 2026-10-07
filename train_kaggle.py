@@ -176,6 +176,7 @@ def main():
     parser.add_argument("--checkpoint-every", type=int, default=2500, help="Checkpoint frequency in episodes")
     parser.add_argument("--eval-every", type=int, default=1000, help="Evaluation frequency in episodes")
     parser.add_argument("--num-envs", type=int, default=16, help="Vectorized environments per worker")
+    parser.add_argument("--traffic-source", type=str, default="default", choices=["default", "alibaba", "sndlib"], help="Traffic generator source (default, alibaba, or sndlib)")
     parser.add_argument("--compile", action="store_true", default=False, help="Enable torch.compile (default: False to avoid Triton GEMM freeze on Tesla T4)")
     args = parser.parse_args()
 
@@ -186,6 +187,9 @@ def main():
     config_path = "config.yaml"
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+
+    if args.traffic_source != "default":
+        config["traffic_source"] = args.traffic_source
 
     # Topology overrides
     topo_overrides = config.get("topology_overrides", {}).get(args.topology, {})

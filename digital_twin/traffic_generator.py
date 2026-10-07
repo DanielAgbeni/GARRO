@@ -688,8 +688,35 @@ def create_traffic_generator(
     Otherwise, returns the standard TrafficGenerator (WAN gravity model).
     """
     topo = str(config.get("network", {}).get("topology", "")).lower()
+    source = str(config.get("traffic_source", "")).lower()
     dc_cfg = config.get("datacenter_traffic", {})
     mm_cfg = config.get("mm1k", {})
+
+    if source in ["alibaba", "alibaba_dcn", "cluster_trace"]:
+        from digital_twin.real_trace_loader import AlibabaDCNTraceLoader
+        br = base_rate if base_rate is not None else dc_cfg.get("base_rate", mm_cfg.get("base_arrival_rate", 100.0))
+        return AlibabaDCNTraceLoader(
+            graph=graph,
+            trace_file=config.get("trace_file"),
+            k=dc_cfg.get("k", 4),
+            base_rate=br,
+            elephant_prob=dc_cfg.get("elephant_prob", 0.08),
+            elephant_scale=dc_cfg.get("elephant_scale", 10.0),
+            allreduce_interval=dc_cfg.get("allreduce_interval", 40),
+            allreduce_scale=dc_cfg.get("allreduce_scale", 4.0),
+            incast_prob=dc_cfg.get("incast_prob", 0.10),
+            incast_senders=dc_cfg.get("incast_senders", 6),
+            seed=seed if seed is not None else config.get("seed", 42),
+        )
+    elif source in ["sndlib", "geant", "abilene"]:
+        from digital_twin.real_trace_loader import SNDlibTraceLoader
+        br = base_rate if base_rate is not None else mm_cfg.get("base_arrival_rate", 100.0)
+        return SNDlibTraceLoader(
+            graph=graph,
+            trace_file=config.get("trace_file"),
+            base_rate=br,
+            seed=seed if seed is not None else config.get("seed", 42),
+        )
 
     use_dc = ("fat_tree" in topo) or dc_cfg.get("enabled", False)
 
@@ -738,4 +765,5 @@ def create_traffic_generator(
             tod_peak_hour=mm_cfg.get("tod_peak_hour", 16.0),
             steps_per_hour=mm_cfg.get("steps_per_hour", 60.0),
             seed=seed if seed is not None else config.get("seed", 42),
-        )
+        )
+

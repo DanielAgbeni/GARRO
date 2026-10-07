@@ -158,7 +158,39 @@ def _run_baseline_worker(args_tuple) -> dict:
             if algo_name == "OSPF":
                 action = 0                          # always shortest-delay path
             elif algo_name == "ECMP":
-                action = step % n_paths             # round-robin
+                # Strict Equal-Cost Multi-Path: hash/round-robin strictly across minimum-hop paths
+                if env.candidate_paths:
+                    costs = [len(p) - 1 for p in env.candidate_paths]
+                    min_cost = min(costs)
+                    eq_indices = [i for i, c in enumerate(costs) if c == min_cost]
+                    action = eq_indices[step % len(eq_indices)]
+                else:
+                    action = 0
+            elif algo_name == "Hedera":
+                # Dynamic Congestion-Aware baseline (Al-Fares et al., NSDI):
+                # Select the equal-cost path with the lowest bottleneck link utilization
+                if env.candidate_paths:
+                    costs = [len(p) - 1 for p in env.candidate_paths]
+                    min_cost = min(costs)
+                    eq_indices = [i for i, c in enumerate(costs) if c == min_cost]
+                    best_idx = eq_indices[0]
+                    min_max_u = float("inf")
+                    for idx in eq_indices:
+                        p = env.candidate_paths[idx]
+                        p_edges = list(zip(p[:-1], p[1:]))
+                        max_u = max(
+                            (env.G.edges.get((u, v), {}).get("utilization", 0.0) for u, v in p_edges),
+                            default=0.0
+                        )
+                        if max_u < min_max_u:
+                            min_max_u = max_u
+                            best_idx = idx
+                    action = best_idx
+                else:
+                    action = 0
+            elif algo_name == "ECMP-Detour":
+                # Legacy unconstrained round-robin across all candidate paths (including detours)
+                action = step % n_paths
             elif algo_name == "Random":
                 action = int(rng.integers(0, n_paths))
             else:
@@ -191,6 +223,7 @@ def _run_baseline_worker(args_tuple) -> dict:
         "packet_loss_pct": float(np.mean(all_loss)) if all_loss else 0.0,
         "tput_ratio":      float(np.mean(all_tputs)) if all_tputs else 1.0,
         "util_variance":   float(np.mean(all_vars)) if all_vars else 0.0,
+        "divergence_pct":  0.0 if algo_name == "OSPF" else 100.0,
     }
 
 
@@ -204,12 +237,17 @@ def run_garro(
     """
     GARRO (PPO + Graph Transformer) evaluation — no gradient updates.
     Runs on the main process so the loaded model stays in-memory.
+    Tracks action distribution and divergence from path 0.
     """
     rewards   = []
     all_lats  = []
     all_loss  = []
     all_tputs = []
     all_vars  = []
+    total_steps = 0
+    diverged_steps = 0
+    action_counts = {}
+
     agent.encoder.eval()
     agent.ac_net.eval()
 
@@ -227,6 +265,11 @@ def run_garro(
             action, _, _ = agent.select_action(
                 env.G, env.candidate_paths, deterministic=deterministic
             )
+            total_steps += 1
+            if action != 0:
+                diverged_steps += 1
+            action_counts[action] = action_counts.get(action, 0) + 1
+
             obs, r, terminated, truncated, info = env.step(action)
             done  = terminated or truncated
             ep_r += r
@@ -243,6 +286,8 @@ def run_garro(
             all_tputs.append(float(np.mean(ep_tputs)))
             all_vars.append(float(np.mean(ep_vars)))
 
+    div_pct = (diverged_steps / max(1, total_steps)) * 100.0
+
     return {
         "mean_reward":     float(np.mean(rewards)),
         "std":             float(np.std(rewards)),
@@ -252,7 +297,10 @@ def run_garro(
         "packet_loss_pct": float(np.mean(all_loss)) if all_loss else 0.0,
         "tput_ratio":      float(np.mean(all_tputs)) if all_tputs else 1.0,
         "util_variance":   float(np.mean(all_vars)) if all_vars else 0.0,
+        "divergence_pct":  float(div_pct),
+        "action_counts":   action_counts,
     }
+
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -349,9 +397,11 @@ def main(args):
 
     # ── Parallel baseline evaluation (Run ONCE) ───────────────────────────
     baseline_args = [
-        ("OSPF",   args.topology, config, args.episodes, 0),
-        ("ECMP",   args.topology, config, args.episodes, 1),
-        ("Random", args.topology, config, args.episodes, 42),
+        ("OSPF",        args.topology, config, args.episodes, 0),
+        ("ECMP",        args.topology, config, args.episodes, 1),
+        ("Hedera",      args.topology, config, args.episodes, 2),
+        ("ECMP-Detour", args.topology, config, args.episodes, 3),
+        ("Random",      args.topology, config, args.episodes, 42),
     ]
 
     n_workers = min(len(baseline_args), max(1, n_cores - 1))
@@ -378,6 +428,7 @@ def main(args):
                     "std": 0.0, "min": 0.0, "max": 0.0,
                     "latency_ms": 0.0, "packet_loss_pct": 0.0,
                     "tput_ratio": 0.0, "util_variance": 0.0,
+                    "divergence_pct": 0.0,
                 }
 
     baseline_elapsed = time.perf_counter() - t0
@@ -414,30 +465,38 @@ def main(args):
     best_res = results[best_garro]
 
     # ── Print results table ───────────────────────────────────────────────
-    ordered = ["Random", "OSPF", "ECMP"] + garro_labels
+    ordered = ["Random", "ECMP-Detour", "ECMP", "Hedera", "OSPF"] + garro_labels
     print(f"{sep}")
     print(f"  {'Algorithm / Model':<18} {'Mean Reward':>12} {'Latency (ms)':>14} "
-          f"{'Loss (%)':>10} {'Tput Ratio':>12} {'Link Var':>10}")
-    print(f"  {'─'*78}")
+          f"{'Loss (%)':>10} {'Tput Ratio':>12} {'Link Var':>10} {'Divergence':>12}")
+    print(f"  {'─'*92}")
     for name in ordered:
         if name not in results:
             continue
         r      = results[name]
         marker = " 🏆 BEST" if name == best_garro else (" ← GARRO" if name in garro_labels else "")
+        div_str = f"{r.get('divergence_pct', 0.0):>10.1f}%" if "divergence_pct" in r else "       N/A"
         print(f"  {name:<18} {r['mean_reward']:>12.4f} {r['latency_ms']:>14.2f} "
-              f"{r['packet_loss_pct']:>10.3f}% {r['tput_ratio']:>12.4f} {r['util_variance']:>10.4f}{marker}")
+              f"{r['packet_loss_pct']:>10.3f}% {r['tput_ratio']:>12.4f} {r['util_variance']:>10.4f} {div_str}{marker}")
     print(f"{sep}")
     print(f"  🏆 Top-Performing GARRO Checkpoint : {best_garro}")
     print(f"     Mean Reward: {best_res['mean_reward']:+.4f} | "
           f"Average Latency: {best_res['latency_ms']:.2f} ms | "
-          f"Packet Loss: {best_res['packet_loss_pct']:.3f}%\n")
+          f"Packet Loss: {best_res['packet_loss_pct']:.3f}% | "
+          f"Path Divergence from OSPF: {best_res.get('divergence_pct', 0.0):.1f}%\n")
 
     # ── Bar chart (Reward) ────────────────────────────────────────────────
     names  = [n for n in ordered if n in results]
     means  = [results[n]["mean_reward"] for n in names]
     stds   = [results[n]["std"]         for n in names]
 
-    base_colors = {"Random": "#95A5A6", "OSPF": "#E74C3C", "ECMP": "#F39C12"}
+    base_colors = {
+        "Random": "#95A5A6",
+        "ECMP-Detour": "#BDC3C7",
+        "ECMP": "#F39C12",
+        "Hedera": "#E67E22",
+        "OSPF": "#E74C3C",
+    }
     palette = ["#2ECC71", "#1ABC9C", "#3498DB", "#9B59B6", "#E67E22", "#27AE60"]
     colors = []
     g_idx = 0
