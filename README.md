@@ -367,12 +367,19 @@ Kaggle offers free **Dual NVIDIA T4 GPUs** (16 GB VRAM each) and 12-hour session
 
 ### Benchmarking Against OSPF & ECMP (`evaluate.py`)
 
-Compare your trained GARRO model against traditional routing algorithms across 500 evaluation episodes in the Digital Twin:
+Compare your trained GARRO model against traditional routing algorithms across 500 evaluation episodes in the Digital Twin. You can pass a specific checkpoint, or an **entire directory of checkpoints** to benchmark all curriculum stages and crown the optimal model:
 
 ```bash
+# Benchmark all checkpoints across training stages (ranks top model):
 python evaluate.py \
-  --checkpoint checkpoints/garro_nsfnet_ep10000.pt \
-  --topology nsfnet \
+  --checkpoint checkpoints/ \
+  --topology fat_tree \
+  --episodes 500
+
+# Or benchmark a specific checkpoint:
+python evaluate.py \
+  --checkpoint checkpoints/garro_fat_tree_final.pt \
+  --topology fat_tree \
   --episodes 500
 ```
 
