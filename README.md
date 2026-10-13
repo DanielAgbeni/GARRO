@@ -60,6 +60,11 @@ The project is structured into two complementary phases:
 - [🖥️ Web Dashboard & Agentic Intent Orchestration](#️-web-dashboard--agentic-intent-orchestration)
   - [Accessing the Dashboard](#accessing-the-dashboard)
   - [Natural Language Intent Routing](#natural-language-intent-routing)
+- [⚔️ GARRO Arena: 4-Way DCN Head-to-Head & Traffic Studio](#️-garro-arena-4-way-dcn-head-to-head--traffic-studio)
+  - [Overview & Capabilities](#overview--capabilities)
+  - [Launching the Arena Server](#launching-the-arena-server)
+  - [Traffic Studio & Diurnal Time-of-Day](#traffic-studio--diurnal-time-of-day)
+  - [Decision Explainer & Inference Inspection](#decision-explainer--inference-inspection)
 - [⚙️ Configuration Reference (`config.yaml`)](#️-configuration-reference-configyaml)
 - [📁 Repository Structure](#-repository-structure)
 - [🔧 Troubleshooting & FAQ](#-troubleshooting--faq)
@@ -383,10 +388,30 @@ python evaluate.py \
   --episodes 500
 ```
 
+#### Verified Benchmark Results — Fat-Tree DCN ($k=4$, 20 Switches, 32 Links)
+Evaluating `garro_fat_tree_ep20000.pt` directly against production baselines:
+
+| Algorithm / Protocol | Mean Reward | Path Latency (ms) | Packet Loss (%) | Throughput Ratio | Path Divergence vs OSPF | Rank |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Random** | 449.13 | 123.35 ms | 1.652% | 0.9835 | 100.0% | 6th |
+| **ECMP-Detour** | 455.77 | 118.77 ms | 1.474% | 0.9853 | 100.0% | 5th |
+| **OSPF (Dijkstra)** | 529.59 | 80.50 ms | 0.921% | 0.9908 | 0.0% | 4th |
+| **ECMP (Hash)** | 559.87 | 64.60 ms | 0.732% | 0.9927 | 100.0% | 3rd |
+| **Hedera (NSDI)** | 617.41 | 36.15 ms | 0.129% | 0.9987 | 100.0% | 2nd |
+| **GARRO (`ep20k`)** | **+618.40** | **35.73 ms** | **0.063%** | **0.9994** | **67.0%** | 🏆 **1st (Top Model)** |
+
+**Key Findings:**
+* **55% Latency Reduction vs OSPF**: OSPF creates severe queue build-ups on shortest-path links; GARRO steers flows around congested spines.
+* **45% Latency Reduction vs ECMP**: Hash collisions in ECMP cause bottleneck spikes; GARRO actively senses link loads and balances flow distribution.
+* **14.6× Lower Packet Loss vs OSPF**: Buffer overflow drops drop from 0.921% to 0.063%.
+* **67% Non-Shortest Path Exploration**: The agent actively uses multi-hop detours whenever spine links approach saturation.
+
 **Baselines Evaluated:**
 * **OSPF (Dijkstra)**: Routes strictly via the path with minimal static delay.
-* **ECMP (Equal-Cost Multi-Path)**: Splits traffic round-robin across candidate shortest paths.
-* **Random**: Selects paths uniformly at random (lower-bound baseline).
+* **ECMP (Equal-Cost Multi-Path)**: Strict hash/round-robin across minimum-hop paths.
+* **Hedera (Al-Fares et al., NSDI)**: Dynamic bottleneck-avoidance heuristic.
+* **ECMP-Detour**: Round-robin across all candidate detours.
+* **Random**: Uniformly random candidate selection.
 
 **Outputs**: Results are exported to `evaluation_outputs/<run_id>/`:
 * `eval_results_<model>_<topology>_ep<episodes>.csv` — Comprehensive metric breakdown table (Delay, Packet Loss, Throughput, Utilization Variance).
@@ -461,33 +486,30 @@ bash start_env.sh
 
 ---
 
-### The 3-Terminal Execution Blueprint
+### The 4-Terminal Execution Blueprint
 
-Running live emulation requires **three separate terminal tabs or windows**. Open 3 terminals and follow this sequence:
+Running live emulation and the digital-twin arena requires separate terminal windows. Open your terminals and follow this sequence:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🖥️  Terminal A — Start the OS-Ken Controller                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│ cd ~/schproject (or projects/GARRO)                                         │
 │ source garro_env/bin/activate                                               │
 │ export EVENTLET_HUB=asyncio                                                 │
-│ python run_controller.py controller/garro_controller.py --observe-links      │
+│ python3 /usr/bin/osken-manager controller/garro_controller.py --observe-links│
 │                                                                             │
-│ (Alternative standard command:                                              │
-│  python3 /usr/bin/osken-manager controller/garro_controller.py              │
-│          --observe-links)                                                   │
+│ (Starts OpenFlow 1.3 switch manager & REST API on port 8080)                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │ (Wait ~3 seconds for controller to bind)
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 🖥️  Terminal B — Launch the Mininet Topology (Must use sudo)                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ # Choose the topology matching your trained model:                          │
-│ sudo python3 topologies/mininet_nsfnet.py                                   │
-│ # (or: sudo python3 topologies/mininet_geant2.py)                           │
-│ # (or: sudo python3 topologies/mininet_fat_tree.py)                         │
+│ # Fat-Tree DCN (k=4, 20 switches, 16 hosts):                                │
+│ sudo python3 topologies/mininet_fat_tree.py                                 │
 │                                                                             │
-│ (Wait ~5 seconds until the "mininet>" interactive prompt appears)           │
+│ (Wait until "mininet>" interactive prompt appears, then run "pingall")      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │ (Wait ~5 seconds for LLDP discovery)
                                       ▼
@@ -497,8 +519,20 @@ Running live emulation requires **three separate terminal tabs or windows**. Ope
 │ source garro_env/bin/activate                                               │
 │ # NOTE: Run as regular user (DO NOT USE SUDO), so the venv is used:         │
 │ python deploy_online.py \                                                   │
-│   --checkpoint checkpoints/garro_nsfnet_ep10000.pt \                        │
-│   --topology nsfnet                                                         │
+│   --checkpoint checkpoints/garro_fat_tree_ep20000.pt \                      │
+│   --topology fat_tree                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │ (Optional / Digital Twin Head-to-Head)
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 🖥️  Terminal D — Launch the GARRO Arena (4-Way Benchmark & Traffic Studio) │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ source garro_env/bin/activate                                               │
+│ python arena_server.py \                                                    │
+│   --checkpoint checkpoints/garro_fat_tree_ep20000.pt \                      │
+│   --port 8090                                                               │
+│                                                                             │
+│ (Runs standalone at http://127.0.0.1:8090/ — does NOT require Mininet/sudo) │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -555,14 +589,18 @@ When you are finished testing Phase 2:
 1. In **Terminal B (Mininet)**: Type `exit` or press `Ctrl+D`.
 2. In **Terminal C (Agent)**: Press `Ctrl+C`.
 3. In **Terminal A (Controller)**: Press `Ctrl+C`.
-4. If the controller process lingers in the background or locks port 6633/8080, run the cleanup script:
-   ```bash
-   bash kill_controller.sh
-   ```
-5. Clean leftover Mininet virtual interfaces:
-   ```bash
-   sudo mn -c
-   ```
+4. In **Terminal D (Arena)**: Press `Ctrl+C`.
+
+#### One-Step Fast Cleanup Command:
+If any process lingers in the background or locks ports 6633, 8080, or 8090, run:
+```bash
+# Force-terminate all controller, agent, and arena processes:
+kill -9 $(pgrep -f "osken-manager|deploy_online|arena_server" 2>/dev/null) 2>/dev/null || true
+
+# Flush leftover Mininet virtual interfaces and restart Open vSwitch:
+sudo mn -c 2>/dev/null || true
+sudo service openvswitch-switch restart 2>/dev/null || true
+```
 
 ---
 
@@ -623,6 +661,84 @@ GARRO includes an **Agentic AI Intent Layer** that allows network operators to s
     -H "Content-Type: application/json" \
     -d '{"intent": "Maximize throughput for large database backups across the network"}'
   ```
+
+---
+
+## ⚔️ GARRO Arena: 4-Way DCN Head-to-Head & Traffic Studio
+
+The **GARRO Arena** (`arena_server.py`) is a standalone, browser-based digital-twin platform designed to demonstrate the intelligent routing agent in action against industry standards (**Hedera**, **ECMP**, and **OSPF**) under identical, reproducible network physics.
+
+Unlike Mininet emulation (which requires Linux root privileges and Open vSwitch kernel modules), the Arena runs **in userspace on any platform** (Windows WSL2, native Linux, macOS, or cloud instances) at **`http://127.0.0.1:8090/`**.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             GARRO ARENA ARCHITECTURE                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Top Bar: 24h Diurnal Clock (Peak vs Nighttime) | Speed Controls (1x,10x,60x│
+├──────────────────────────────────────┬──────────────────────────────────────┤
+│  🟩 GARRO (AI Agent)                 │  🟧 Hedera (Congestion-Aware)        │
+│  Live Fat-Tree k=4 Heatmap           │  Live Fat-Tree k=4 Heatmap           │
+│  Lat: ~35ms | Loss: ~0.06%           │  Lat: ~36ms | Loss: ~0.13%           │
+├──────────────────────────────────────┼──────────────────────────────────────┤
+│  🟨 ECMP (Equal-Cost Multi-Path)     │  🟥 OSPF (Shortest Path First)       │
+│  Live Fat-Tree k=4 Heatmap           │  Live Fat-Tree k=4 Heatmap           │
+│  Lat: ~64ms | Loss: ~0.73%           │  Lat: ~80ms | Loss: ~0.92%           │
+├──────────────────────────────────────┴──────────────────────────────────────┤
+│  Left: Traffic Studio (Load, Elephants, Spatial Patterns, Chaos Buttons)    │
+│  Right: Decision Explainer (Candidate Softmax Probabilities, Audit Log)     │
+│  Bottom: Real-Time Latency & Loss QoS Charts | Benchmark Scoreboard         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Overview & Capabilities
+
+* **Synchronized 4-Way Side-by-Side Comparison**: All four networks (GARRO, Hedera, ECMP, OSPF) receive the **identical traffic matrix stream**, link-rate perturbations, and flow arrivals simultaneously on each simulation tick.
+* **Live Link Heatmaps**: Every link on all four Fat-Tree diagrams updates dynamically: Green (`<30%`), Cyan (`<60%`), Amber (`<80%`), Orange (`<95%`), and Glowing Red (`>95%` bottleneck).
+* **Click-to-Fail Interaction**: Click any link on any of the four Fat-Tree diagrams to toggle an instant link failure and watch all four protocols dynamically adapt or bottleneck in real time.
+
+### Launching the Arena Server
+
+Open a terminal window and run:
+
+```bash
+cd ~/schproject (or projects/GARRO)
+source garro_env/bin/activate
+python arena_server.py --checkpoint checkpoints/garro_fat_tree_ep20000.pt --port 8090
+```
+
+Open your browser and navigate to:
+```
+http://127.0.0.1:8090/
+```
+
+### Traffic Studio & Diurnal Time-of-Day
+
+The left panel provides fine-grained control over network load and physical conditions:
+* **Offered Load Slider** (20% to 200% link capacity).
+* **Elephant Flow Probability Slider** (Pareto $\alpha=1.15$ heavy-tailed distribution modeling massive cloud transfers).
+* **Spatial Communication Patterns**:
+  * **Mixed DCN**: Alternates across background communication, periodic bursts, and staggered workloads.
+  * **Staggered Locality**: Intra-rack ($P_{\text{edge}}=20\%$), intra-pod ($P_{\text{pod}}=30\%$), and inter-pod core bisection ($P_{\text{core}}=50\%$).
+  * **Stride Pattern**: Host $i$ communicates with $(i + \text{stride}) \pmod N$, severely stressing core bisection bandwidth.
+  * **All-Reduce Collective**: Synchronized all-to-all gradient exchange simulating distributed GPU training clusters.
+* **Chaos & Stress Injector**:
+  * ⚡ **Incast Microburst**: Many-to-one synchronization spike onto an aggregator switch.
+  * 🐘 **Elephant Storm**: Heavy-tailed Pareto flow explosion across multiple pairs.
+  * ✂ **Cut Core Switch Link**: Drops a central backbone link to test multipath resilience.
+  * ↺ **Restore All Links**: Instantly heals failed links.
+* **24-Hour Diurnal Dynamics**:
+  * Simulates real data center cycles: interactive daytime query peaks (15:00) superimposed with nighttime batch database syncs and ML checkpoint backups (03:00).
+  * Scrub the 24-hour slider or use speed accelerators (**1×, 10×, 60×**, or **Pause**).
+
+### Decision Explainer & Inference Inspection
+
+The right panel provides full transparency into the neural agent's decision-making:
+* **Active Routed Demand**: Displays the communicating host/switch pair (e.g. `s15 → s19`).
+* **Candidate Paths**: Lists all $K$-shortest candidate paths with hop counts, intermediate switches, and bottleneck link utilizations.
+* **Softmax Probability Bars**: Shows the probability distribution computed by the Path Attention cross-attention layer ($\text{Softmax}(\text{Logits})$).
+* **Policy Pick Chips**: Badges indicating which candidate path each baseline (OSPF, ECMP, Hedera, GARRO) chose for the current demand.
+* **Sub-20ms Inference Telemetry**: Displays $p_{50}$ and $p_{99}$ inference latencies, decisions per second, and verifies 100% neural policy execution without fallback stalls.
+* **Audit Trail**: Real-time table logging recent decisions, selected paths, and confidence scores.
 
 ---
 
