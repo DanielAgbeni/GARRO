@@ -282,9 +282,14 @@ async def main(args):
                      device=device, compile_model=False)
     try:
         agent.load(args.checkpoint)
-        print(f"[Deploy] Checkpoint loaded from {args.checkpoint}")
+        print(f"[Deploy] ✓ Checkpoint successfully loaded from {args.checkpoint}")
     except Exception as e:
-        print(f"[Deploy] Warning: checkpoint load failed ({e}) — random weights")
+        print(f"\n[Deploy] ✗ Checkpoint load failed: {e}")
+        if not getattr(args, "allow_random", False):
+            print("[Deploy]   Aborting to prevent running live network traffic on uninitialized random weights.")
+            print("[Deploy]   Pass --allow-random if you explicitly intend to test random exploration.\n")
+            sys.exit(1)
+        print("[Deploy]   Warning: continuing with RANDOM weights (--allow-random enabled)\n")
 
     agent.encoder.eval()
     agent.ac_net.eval()
@@ -430,6 +435,10 @@ if __name__ == "__main__":
         "--topology", default="nsfnet",
         choices=list(TOPOLOGY_MAP.keys()),
         help="Network topology (default: nsfnet)",
+    )
+    parser.add_argument(
+        "--allow-random", action="store_true",
+        help="Allow deployment with random weights if checkpoint fails to load",
     )
     args = parser.parse_args()
     asyncio.run(main(args))

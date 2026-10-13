@@ -772,6 +772,67 @@ class PPOAgent:
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     @torch.no_grad()
+    def explain_action(
+        self,
+        graph: nx.Graph,
+        candidate_paths: list,
+    ) -> Dict[str, object]:
+        """
+        Inference-only introspection used by the Arena dashboard.
+
+        Returns the greedy action together with the full policy distribution
+        over the K candidate paths and the critic's state-value estimate.
+        Masking and clamping mirror ``ac_net.get_action`` exactly, so the
+        reported probabilities are the ones the agent actually acts on.
+        """
+        conv = self._ensure_converter(graph)
+        pyg = conv.convert(graph)
+        pyg.batch = torch.zeros(pyg.x.size(0), dtype=torch.long, device=self.device)
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            latent, node_feats = self.encoder(pyg, return_node_feats=True)
+
+        n_valid = min(len(candidate_paths), self.k_paths)
+        mask = torch.zeros(self.k_paths, dtype=torch.bool, device=self.device)
+        mask[:n_valid] = True
+
+        path_edges = conv.paths_to_edge_indices(candidate_paths[: self.k_paths])
+        src_dst = None
+        if candidate_paths and len(candidate_paths[0]) > 0:
+            s_idx = conv.idx_map.get(candidate_paths[0][0], 0)
+            d_idx = conv.idx_map.get(candidate_paths[0][-1], 0)
+            src_dst = torch.tensor([[s_idx, d_idx]], dtype=torch.long, device=self.device)
+
+        with torch.autocast(
+            device_type=self.device.type,
+            dtype=self._amp_dtype,
+            enabled=self._amp_enabled,
+        ):
+            logits, value = self.ac_net(
+                latent,
+                node_feats=node_feats,
+                edge_index=pyg.edge_index,
+                edge_attr=pyg.edge_attr,
+                path_edges=[path_edges],
+                src_dst=src_dst,
+            )
+
+        logits = torch.nan_to_num(logits.float(), nan=0.0, posinf=10.0, neginf=-10.0)
+        logits = torch.clamp(logits, -10.0, 10.0)
+        if bool(mask.any().item()):
+            logits = logits.masked_fill(~mask, -1e9)
+        probs = torch.softmax(logits, dim=-1).squeeze(0)
+
+        return {
+            "action": int(probs.argmax().item()),
+            "probs":  [float(p) for p in probs[:n_valid].tolist()],
+            "value":  float(value.float().reshape(-1)[0].item()),
+        }
+
+    @torch.no_grad()
     def select_actions_batch(
         self,
         graphs: List[nx.Graph],
